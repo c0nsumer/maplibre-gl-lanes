@@ -1,0 +1,17 @@
+{
+    // Lint for the library, demo, tests, and build scripts. tsc --strict
+    // already catches undefined identifiers and type errors, so this exists
+    // for the class of bugs the type checker lets through: unused variables
+    // that hide a dropped code path, always-zero arithmetic, and similar. It
+    // is oxlint rather than typescript-eslint because typescript-eslint does
+    // not support the TypeScript 7 compiler this repo uses. The default
+    // "correctness" category is kept; no stylistic categories are enabled.
+    "$schema": "./node_modules/oxlint/configuration_schema.json",
+    "ignorePatterns": ["dist/", "demo/dist/", "demo/public/"],
+    "rules": {
+        // `new Array(n)` is the idiomatic preallocation for the numeric
+        // scratch arrays in the layout core; the rule's ambiguity concern
+        // does not apply to a variable that is plainly a length.
+        "unicorn/no-new-array": "off"
+    }
+}

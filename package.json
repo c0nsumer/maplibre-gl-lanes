@@ -1,0 +1,62 @@
+{
+  "name": "maplibre-gl-lanes",
+  "version": "1.0.0",
+  "description": "Draws routes that share paths as ordered parallel lanes in MapLibre GL JS: a transit-map look for any route network, with crossing minimization, smooth junctions, and constant pixel spacing at every zoom.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/c0nsumer/maplibre-gl-lanes.git"
+  },
+  "homepage": "https://github.com/c0nsumer/maplibre-gl-lanes#readme",
+  "bugs": "https://github.com/c0nsumer/maplibre-gl-lanes/issues",
+  "license": "MIT",
+  "keywords": ["maplibre", "maplibre-gl", "plugin", "custom-layer", "routes", "transit-map", "parallel-lines", "line-offset"],
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "dev": "vite demo",
+    "examples": "node scripts/serve-examples.mjs",
+    "build:demo": "vite build demo",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src test demo scripts",
+    "build": "node scripts/build.mjs && tsc -p tsconfig.build.json && node scripts/demo-assets.mjs",
+    "prepublishOnly": "corepack pnpm run test && corepack pnpm run typecheck && corepack pnpm run lint && corepack pnpm run build"
+  },
+  "peerDependencies": {
+    "maplibre-gl": ">=5.0.0"
+  },
+  "dependencies": {
+    "@types/geojson": "^7946.0.16"
+  },
+  "devDependencies": {
+    "@protomaps/basemaps": "^5.7.2",
+    "@types/node": "^22.20.3",
+    "esbuild": "^0.28.2",
+    "maplibre-gl": "^6.10.0",
+    "maplibre-gl-5": "npm:maplibre-gl@5",
+    "oxlint": "^1.83.0",
+    "pmtiles": "^4.5.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
+  },
+  "main": "dist/maplibre-gl-lanes.mjs",
+  "module": "dist/maplibre-gl-lanes.mjs",
+  "types": "dist/types/index.d.ts",
+  "unpkg": "dist/maplibre-gl-lanes.js",
+  "jsdelivr": "dist/maplibre-gl-lanes.js",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/maplibre-gl-lanes.mjs"
+    },
+    "./dist/maplibre-gl-lanes.js": "./dist/maplibre-gl-lanes.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ]
+}

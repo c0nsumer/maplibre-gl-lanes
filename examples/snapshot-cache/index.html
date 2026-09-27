@@ -1,0 +1,100 @@
+<!doctype html>
+<!-- Caching the lane order.
+
+     Ordering is the expensive step, and it depends only on the data.
+     `snapshotLaneOrders` keys it by edge geometry, so it can be stored and
+     reapplied to a graph built from the same data. Here the first visit
+     orders and saves to localStorage; later visits apply the saved orders.
+
+     A build step can do the same: order once and ship the snapshot with the
+     data. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>maplibre-gl-lanes: snapshot cache</title>
+<link rel="stylesheet" href="/node_modules/maplibre-gl/dist/maplibre-gl.css" />
+<style>
+    html, body, #map { margin: 0; height: 100%; }
+    #readout { position: absolute; top: 10px; left: 10px; z-index: 1; background: rgba(255,255,255,.92);
+               padding: 8px 10px; border-radius: 6px; font: 13px system-ui, sans-serif; max-width: 320px; }
+    #readout p { margin: 4px 0; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="readout"><p>Ordering...</p></div>
+
+<script type="module">
+import * as maplibregl from '/node_modules/maplibre-gl/dist/maplibre-gl.mjs';
+import {buildLineGraph, orderLanesAsync, applyLaneOrders, snapshotLaneOrders, LaneLayer} from '/dist/maplibre-gl-lanes.mjs';
+
+const KEY = 'lane-orders-example';
+const readout = document.getElementById('readout');
+function say(html) {
+    readout.innerHTML = html + '<p><button id="clear">Clear the cache and reload</button></p>';
+    document.getElementById('clear').onclick = () => {
+        localStorage.removeItem(KEY);
+        location.reload();
+    };
+}
+
+const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+        version: 8,
+        sources: {},
+        layers: [{id: 'bg', type: 'background', paint: {'background-color': '#eeeeea'}}],
+    },
+    center: [-83.1625, 42.8046],
+    zoom: 15,
+});
+
+map.on('load', async () => {
+    const data = await (await fetch('/test/fixtures/example.src.geojson')).json();
+
+    const graph = buildLineGraph(data.features, {
+        routeProperty: 'route_id',
+        colorProperty: 'route_colour',
+        nameProperty: 'route_name',
+    });
+
+    // A stored snapshot may come from other data or another plugin version:
+    // do not assume it parses or fits.
+    let saved = null;
+    try {
+        saved = JSON.parse(localStorage.getItem(KEY) ?? 'null');
+    } catch {
+        saved = null;
+    }
+
+    const started = performance.now();
+    let note;
+
+    if (saved) {
+        // An exact match also restores the baseline, so a fully covered
+        // graph needs no ordering and no `stabilizeLanes`.
+        const matched = applyLaneOrders(graph, saved);
+        note = `<p>Applied ${matched} of ${graph.edges.length} edges from the cache.</p>`;
+        if (matched < graph.edges.length) {
+            // Order the rest, seeded so the lanes the snapshot knew stay put.
+            await orderLanesAsync(graph, {seed: saved});
+            note += '<p>The rest was ordered, seeded from the cache.</p>';
+        }
+    } else {
+        await orderLanesAsync(graph);
+        localStorage.setItem(KEY, JSON.stringify(snapshotLaneOrders(graph)));
+        note = '<p>No cache: ordered from scratch and saved. Reload to use it.</p>';
+    }
+
+    say(`<p><b>${(performance.now() - started).toFixed(1)} ms</b> to lane order.</p>` + note);
+
+    map.addLayer(new LaneLayer({
+        id: 'routes',
+        graph,
+        sizes: () => ({spacing: 8, width: 7, casingWidth: 1}),
+        casingColor: '#2a2a2a',
+    }));
+});
+</script>
+</body>
+</html>

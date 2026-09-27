@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>maplibre-gl-lanes demo</title>
+
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #panel { position: absolute; top: 10px; left: 10px; background: rgba(255,255,255,.92); padding: 8px 10px; border-radius: 6px; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,.3); max-width: 260px; }
+  #panel label { display: block; margin: 2px 0; }
+  #stats { font-family: ui-monospace, monospace; font-size: 11px; color: #444; white-space: pre; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <label><input type="radio" name="mode" value="lanes" checked /> maplibre-gl-lanes (custom layer)</label>
+  <label><input type="radio" name="mode" value="native" /> native line-offset (baseline)</label>
+  <label><input type="checkbox" id="basemap" checked /> basemap</label>
+  <div id="routes"></div>
+  <div id="stats"></div>
+</div>
+<script type="module" src="./main.ts"></script>
+</body>
+</html>

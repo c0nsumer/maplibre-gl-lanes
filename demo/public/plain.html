@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- The built bundle without a bundler. MapLibre 6 ships ES modules only,
+     so this is a module script using the plugin's .mjs build. Run
+     `pnpm build` first to copy the files into demo/public, where Vite
+     serves this page untouched. Paths are relative so it works under a
+     subpath such as GitHub Pages. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>maplibre-gl-lanes plain script</title>
+<link rel="stylesheet" href="vendor-maplibre/maplibre-gl.css" />
+<style>html, body, #map { margin: 0; height: 100%; }</style>
+</head>
+<body>
+<div id="map"></div>
+<script type="module">
+import * as maplibregl from './vendor-maplibre/maplibre-gl.mjs';
+import {buildLineGraph, orderLanesAsync, LaneLayer} from './dist/maplibre-gl-lanes.mjs';
+
+const map = new maplibregl.Map({
+    container: 'map',
+    style: {version: 8, sources: {}, layers: [{id: 'bg', type: 'background', paint: {'background-color': '#eeeeea'}}]},
+    center: [-87.6408, 46.4972],
+    zoom: 15.5,
+});
+map.on('load', async () => {
+    const fc = await (await fetch('ramba.geojson')).json();
+    const graph = buildLineGraph(fc.features, {routeProperty: 'route_id', colorProperty: 'route_colour', nameProperty: 'route_name'});
+    const cost = await orderLanesAsync(graph);
+    document.title = `plain: cost ${cost}`;
+    map.addLayer(new LaneLayer({
+        id: 'routes',
+        graph,
+        sizes: (z) => { const w = z <= 10 ? 2 : z >= 18 ? 7 : z <= 14 ? 2 + ((z - 10) / 4) * 2 : 4 + ((z - 14) / 4) * 3; return {spacing: w + 1, width: w, casingWidth: 1}; },
+        casingColor: '#2a2a2a',
+    }));
+});
+</script>
+</body>
+</html>

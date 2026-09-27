@@ -1,0 +1,88 @@
+<!doctype html>
+<!-- Coloring by the path rather than by the route.
+
+     Every path here carries an IMBA difficulty grade. `uniformProperties`
+     keeps it on the edge, and a `laneStyle` callback reads it to pick the
+     lane's color and dash. Casing, highlight and dimming stay per route.
+
+     This example uses mfo.src.geojson, the fixture with graded paths. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>maplibre-gl-lanes: path colors</title>
+<link rel="stylesheet" href="/node_modules/maplibre-gl/dist/maplibre-gl.css" />
+<style>
+    html, body, #map { margin: 0; height: 100%; }
+    #legend { position: absolute; top: 10px; left: 10px; z-index: 1; background: rgba(255,255,255,.92);
+              padding: 8px 10px; border-radius: 6px; font: 13px system-ui, sans-serif; }
+    #legend div { margin: 3px 0; }
+    #legend i { display: inline-block; width: 18px; height: 5px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="legend"></div>
+
+<script type="module">
+import * as maplibregl from '/node_modules/maplibre-gl/dist/maplibre-gl.mjs';
+import {buildLineGraph, orderLanesAsync, LaneLayer} from '/dist/maplibre-gl-lanes.mjs';
+
+const GRADES = {
+    '0': {label: 'easiest', color: '#2f9e44'},
+    '1': {label: 'easy', color: '#1971c2'},
+    '2': {label: 'more difficult', color: '#f08c00'},
+    '3': {label: 'very difficult', color: '#c92a2a'},
+    '4': {label: 'extremely difficult', color: '#343a40'},
+};
+const UNRATED = {label: 'unrated', color: '#9a9a9a'};
+
+document.getElementById('legend').innerHTML =
+    [...Object.values(GRADES), UNRATED]
+        .map((g) => `<div><i style="background:${g.color}"></i>${g.label}</div>`)
+        .join('');
+
+const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+        version: 8,
+        sources: {},
+        layers: [{id: 'bg', type: 'background', paint: {'background-color': '#eeeeea'}}],
+    },
+    center: [-83.1139, 42.7221],
+    zoom: 14,
+});
+
+map.on('load', async () => {
+    const data = await (await fetch('/test/fixtures/mfo.src.geojson')).json();
+
+    // The grade has to be a uniform property: an edge may only span features
+    // that agree on it, or one lane would have two colors along its length.
+    const graph = buildLineGraph(data.features, {
+        routeProperty: 'route_id',
+        colorProperty: 'route_colour',
+        nameProperty: 'route_name',
+        uniformProperties: ['imba_difficulty'],
+    });
+    await orderLanesAsync(graph);
+
+    map.addLayer(new LaneLayer({
+        id: 'routes',
+        graph,
+        sizes: () => ({spacing: 9, width: 8, casingWidth: 1}),
+        casingColor: '#2a2a2a',
+
+        // Called per edge and route; return only the fields to override.
+        // It must be pure: the layer resolves it into a table when set,
+        // because a callback cannot cross to the worker.
+        laneStyle: (edge) => {
+            const grade = edge.properties?.imba_difficulty;
+            // Look the value up rather than range-check it: '' >= 0 is true,
+            // so a range check would grade unrated paths as easiest.
+            const known = typeof grade === 'string' && Object.hasOwn(GRADES, grade);
+            return known ? {color: GRADES[grade].color} : {color: UNRATED.color, dash: [2, 2]};
+        },
+    }));
+});
+</script>
+</body>
+</html>

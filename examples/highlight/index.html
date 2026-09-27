@@ -1,0 +1,90 @@
+<!doctype html>
+<!-- Click a lane: lift its route out of the bundle and open a popup on it.
+
+     `queryLane` returns the nearest lane and every route on its edge, so one
+     click selects a route and lists what shares its path. `setHighlight`
+     draws the selected route last, with a halo, and dims the rest. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>maplibre-gl-lanes: highlight and popup</title>
+<link rel="stylesheet" href="/node_modules/maplibre-gl/dist/maplibre-gl.css" />
+<style>
+    html, body, #map { margin: 0; height: 100%; }
+    #hint { position: absolute; top: 10px; left: 10px; z-index: 1; background: rgba(255,255,255,.92);
+            padding: 6px 10px; border-radius: 6px; font: 13px system-ui, sans-serif; }
+    .maplibregl-popup-content { font: 13px system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="hint">Click a lane.</div>
+
+<script type="module">
+import * as maplibregl from '/node_modules/maplibre-gl/dist/maplibre-gl.mjs';
+import {buildLineGraph, orderLanesAsync, LaneLayer} from '/dist/maplibre-gl-lanes.mjs';
+
+const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+        version: 8,
+        sources: {},
+        layers: [{id: 'bg', type: 'background', paint: {'background-color': '#eeeeea'}}],
+    },
+    center: [-83.1625, 42.8046],
+    zoom: 15.5,
+});
+
+map.on('load', async () => {
+    const data = await (await fetch('/test/fixtures/example.src.geojson')).json();
+
+    const graph = buildLineGraph(data.features, {
+        routeProperty: 'route_id',
+        colorProperty: 'route_colour',
+        nameProperty: 'route_name',
+        uniformProperties: ['trail_name'],
+    });
+    await orderLanesAsync(graph);
+
+    const layer = new LaneLayer({
+        id: 'routes',
+        graph,
+        sizes: () => ({spacing: 9, width: 8, casingWidth: 1}),
+        casingColor: '#2a2a2a',
+    });
+    map.addLayer(layer);
+
+    const nameOf = (id) => graph.routes.get(id)?.name ?? id;
+    const popup = new maplibregl.Popup({closeButton: false, offset: 10});
+
+    map.on('click', (e) => {
+        // Tolerance in px. The nearest lane still wins, so a wider one only
+        // adds reach: 8 suits a mouse, touch wants more.
+        const hit = layer.queryLane(e.point, 8);
+
+        if (!hit) {
+            layer.setHighlight(null);
+            popup.remove();
+            return;
+        }
+
+        // `dim` fades the other routes so the lifted one reads through a
+        // dense bundle.
+        layer.setHighlight(hit.route, {dim: 0.55});
+
+        const sharing = hit.routes.filter((id) => id !== hit.route);
+        const trail = hit.properties.trail_name;
+        popup
+            // The point on the lane, not the pointer.
+            .setLngLat(hit.lngLat)
+            .setHTML(
+                `<b>${nameOf(hit.route)}</b>` +
+                (trail ? `<br />along ${trail}` : '') +
+                (sharing.length ? `<br />shares this path with ${sharing.map(nameOf).join(', ')}` : '')
+            )
+            .addTo(map);
+    });
+});
+</script>
+</body>
+</html>

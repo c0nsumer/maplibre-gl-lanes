@@ -1,0 +1,56 @@
+# Deploys the demo to GitHub Pages on each published release, so it shows
+# released code rather than main; it can also be run by hand. Pages must be
+# set to deploy from GitHub Actions in the repository settings.
+name: Deploy the demo to GitHub Pages
+
+on:
+    release:
+        types: [published]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    pages: write
+    id-token: write
+
+# A newer run waits rather than cancels, so no deployment is left half done.
+concurrency:
+    group: pages
+    cancel-in-progress: false
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 24
+
+            - run: corepack enable
+
+            - run: corepack pnpm install --frozen-lockfile
+
+            # The library build copies the bundles and MapLibre into
+            # demo/public for plain.html. Pages serves the site under the
+            # repository name, hence the base.
+            - run: corepack pnpm build
+
+            - run: corepack pnpm exec vite build demo --base "/${{ github.event.repository.name }}/"
+
+            - uses: actions/configure-pages@v6
+
+            - uses: actions/upload-pages-artifact@v5
+              with:
+                  path: demo/dist
+
+    deploy:
+        needs: build
+        runs-on: ubuntu-latest
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+        steps:
+            - id: deployment
+              uses: actions/deploy-pages@v5

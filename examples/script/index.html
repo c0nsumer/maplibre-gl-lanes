@@ -1,0 +1,52 @@
+<!doctype html>
+<!-- No bundler and no build step. A plain <script> tag defines the global
+     `maplibreLanes`. The plugin has no runtime dependency on MapLibre, so
+     MapLibre can be loaded any way; it ships ES modules only, hence the
+     module script below. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>maplibre-gl-lanes: classic script</title>
+<link rel="stylesheet" href="/node_modules/maplibre-gl/dist/maplibre-gl.css" />
+<style>html, body, #map { margin: 0; height: 100%; }</style>
+</head>
+<body>
+<div id="map"></div>
+
+<script src="/dist/maplibre-gl-lanes.js"></script>
+<script type="module">
+import * as maplibregl from '/node_modules/maplibre-gl/dist/maplibre-gl.mjs';
+
+const {buildLineGraph, orderLanesAsync, LaneLayer} = maplibreLanes;
+
+const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+        version: 8,
+        sources: {},
+        layers: [{id: 'bg', type: 'background', paint: {'background-color': '#eeeeea'}}],
+    },
+    center: [-83.1625, 42.8046],
+    zoom: 15,
+});
+
+map.on('load', async () => {
+    const data = await (await fetch('/test/fixtures/example.src.geojson')).json();
+
+    const graph = buildLineGraph(data.features, {
+        routeProperty: 'route_id',
+        colorProperty: 'route_colour',
+        nameProperty: 'route_name',
+    });
+    await orderLanesAsync(graph);
+
+    map.addLayer(new LaneLayer({
+        id: 'routes',
+        graph,
+        sizes: () => ({spacing: 8, width: 7, casingWidth: 1}),
+        casingColor: '#2a2a2a',
+    }));
+});
+</script>
+</body>
+</html>

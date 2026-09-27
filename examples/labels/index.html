@@ -1,0 +1,104 @@
+<!doctype html>
+<!-- Labels and direction arrows along the lanes.
+
+     `laneFeatures()` returns the lanes as GeoJSON LineStrings for a symbol
+     layer to place text along. The lanes move with the zoom and each build,
+     so the source must be refreshed: the two handlers at the end are the
+     whole rule. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>maplibre-gl-lanes: labels and chevrons</title>
+<link rel="stylesheet" href="/node_modules/maplibre-gl/dist/maplibre-gl.css" />
+<style>html, body, #map { margin: 0; height: 100%; }</style>
+</head>
+<body>
+<div id="map"></div>
+
+<script type="module">
+import * as maplibregl from '/node_modules/maplibre-gl/dist/maplibre-gl.mjs';
+import {buildLineGraph, orderLanesAsync, LaneLayer} from '/dist/maplibre-gl-lanes.mjs';
+
+const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+        version: 8,
+        sources: {},
+        // Symbol layers need glyphs; any font server will do.
+        glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
+        layers: [{id: 'bg', type: 'background', paint: {'background-color': '#eeeeea'}}],
+    },
+    center: [-83.1625, 42.8046],
+    zoom: 15.5,
+});
+
+map.on('load', async () => {
+    const data = await (await fetch('/test/fixtures/example.src.geojson')).json();
+
+    // `uniformProperties` carries path properties onto the lane features;
+    // the chevron filter below reads `oneway`.
+    const graph = buildLineGraph(data.features, {
+        routeProperty: 'route_id',
+        colorProperty: 'route_colour',
+        nameProperty: 'route_name',
+        uniformProperties: ['oneway'],
+    });
+    await orderLanesAsync(graph);
+
+    const layer = new LaneLayer({
+        id: 'routes',
+        graph,
+        sizes: () => ({spacing: 9, width: 8, casingWidth: 1}),
+        casingColor: '#2a2a2a',
+    });
+    map.addLayer(layer);
+
+    map.addSource('lane-labels', {type: 'geojson', data: layer.laneFeatures()});
+
+    map.addLayer({
+        id: 'lane-names',
+        type: 'symbol',
+        source: 'lane-labels',
+        layout: {
+            'symbol-placement': 'line',
+            'text-field': ['get', 'name'],
+            'text-font': ['Noto Sans Regular'],
+            'text-size': 11,
+            'symbol-spacing': 250,
+            'text-max-angle': 25,
+        },
+        paint: {'text-color': '#222', 'text-halo-color': '#fff', 'text-halo-width': 1.5},
+    });
+
+    // `direction` is 1 where the coordinates run the way the route travels,
+    // 0 where its features cross the edge both ways. It comes from the
+    // geometry, not a tag, so a loop has a direction everywhere; `oneway`
+    // limits the arrows to paths ridden one way only.
+    map.addLayer({
+        id: 'lane-chevrons',
+        type: 'symbol',
+        source: 'lane-labels',
+        filter: ['all', ['==', ['get', 'direction'], 1], ['==', ['get', 'oneway'], 'yes']],
+        layout: {
+            'symbol-placement': 'line',
+            'text-field': '›',
+            'text-font': ['Noto Sans Regular'],
+            'text-size': 16,
+            'symbol-spacing': 90,
+            'text-keep-upright': false,
+            'text-allow-overlap': true,
+        },
+        paint: {'text-color': '#fff'},
+    });
+
+    const refresh = () => map.getSource('lane-labels').setData(layer.laneFeatures());
+
+    // `moveend` can fire before the worker's build returns, so a build that
+    // lands after the map stopped refreshes too: one refresh per gesture,
+    // always of the newest lanes.
+    map.on('moveend', refresh);
+    layer.setOnBuild(() => map.isMoving() || refresh());
+});
+</script>
+</body>
+</html>

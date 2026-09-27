@@ -1,0 +1,68 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it, and please also cite the LOOM papers it builds on (see references)."
+title: "maplibre-gl-lanes"
+type: software
+authors:
+  - family-names: Vigneau
+    given-names: Steve
+license: MIT
+version: 1.0.0
+date-released: "2026-09-27"
+repository-code: "https://github.com/c0nsumer/maplibre-gl-lanes"
+abstract: "A MapLibre GL JS plugin that draws routes sharing paths as ordered parallel lanes, with LOOM-style crossing minimization, smooth junctions, and constant pixel spacing at every zoom."
+references:
+  - type: software
+    title: "LOOM: automated generation of geographically correct or schematic transit maps"
+    authors:
+      - family-names: Brosi
+        given-names: Patrick
+      - family-names: Bast
+        given-names: Hannah
+      - family-names: Storandt
+        given-names: Sabine
+    institution:
+      name: "University of Freiburg, Chair of Algorithms and Data Structures"
+    repository-code: "https://github.com/ad-freiburg/loom"
+    license: GPL-3.0
+    notes: "The design of LOOM's topology, ordering, and rendering stages informed this plugin; its parallel-offset connectors for routes that turn together were adopted from the renderer's design. No LOOM code was used; everything here is reimplemented from the papers and thesis."
+  - type: software
+    title: "QGIS LOOM Transit Map Generator"
+    authors:
+      - name: "Transport for Cairo"
+    repository-code: "https://github.com/transportforcairo/loom_qgis"
+    license: GPL-3.0
+    notes: "A QGIS front end for LOOM, reviewed for how LOOM is used in practice and which of its parameters practitioners are given."
+  - type: article
+    title: "Efficient Generation of Geographically Accurate Transit Maps"
+    authors:
+      - family-names: Bast
+        given-names: Hannah
+      - family-names: Brosi
+        given-names: Patrick
+      - family-names: Storandt
+        given-names: Sabine
+    journal: "ACM Transactions on Spatial Algorithms and Systems"
+    volume: 5
+    issue: 4
+    year: 2019
+    doi: 10.1145/3337790
+  - type: thesis
+    title: "Automated Generation of Transit Maps"
+    authors:
+      - family-names: Brosi
+        given-names: Patrick
+    institution:
+      name: "University of Freiburg"
+    year: 2022
+    url: "https://ad-publications.cs.uni-freiburg.de/theses/PhD_Thesis_Patrick_Brosi.pdf"
+  - type: conference-paper
+    title: "Metro-Line Crossing Minimization: Hardness, Approximations, and Tractable Cases"
+    authors:
+      - family-names: Fink
+        given-names: Martin
+      - family-names: Pupyrev
+        given-names: Sergey
+    conference:
+      name: "Graph Drawing 2013"
+    year: 2013
+    url: "https://arxiv.org/abs/1306.2079"

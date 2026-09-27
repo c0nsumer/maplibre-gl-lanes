@@ -1,0 +1,11 @@
+node_modules/
+dist/
+demo/dist/
+*.log
+.DS_Store
+demo/public/vendor-maplibre
+demo/public/dist
+shots/
+.claude/
+__pycache__/
+examples/bundler/pnpm-lock.yaml

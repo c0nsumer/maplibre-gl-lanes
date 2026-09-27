@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>maplibre-gl-lanes examples</title>
+<style>
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 40px auto; max-width: 42em; padding: 0 1em; }
+    li { margin: 8px 0; }
+</style>
+</head>
+<body>
+<h1>maplibre-gl-lanes examples</h1>
+<p>Run <code>corepack pnpm build</code> first: these pages load the built
+bundle from <code>/dist</code>.</p>
+<ul>
+    <li><a href="script/">Classic script</a>: no bundler, the global <code>maplibreLanes</code>.</li>
+    <li><a href="labels/">Labels and chevrons</a>: symbol layers along the lanes.</li>
+    <li><a href="highlight/">Highlight and popup</a>: click a lane to lift its route.</li>
+    <li><a href="path-colors/">Path colors</a>: color by a property of the path, not the route.</li>
+    <li><a href="snapshot-cache/">Snapshot cache</a>: store the lane order and reuse it.</li>
+</ul>
+<p>The minimal bundler app is <code>examples/bundler/</code>, which has its
+own install; see <a href="https://github.com/c0nsumer/maplibre-gl-lanes/tree/main/examples">the examples README</a>.</p>
+</body>
+</html>
