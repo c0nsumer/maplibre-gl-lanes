@@ -132,8 +132,10 @@ async function main() {
         stats.textContent =
             `nodes ${graph.nodes.length} edges ${graph.edges.length}\n` +
             `order cost ${cost} (${orderMs.toFixed(0)} ms)\n` +
-            (lay ? `layout z${lay.zoom.toFixed(2)} ${lay.stats.vertices} verts, ${lay.stats.edgesBuilt}/${lay.stats.edges} edges\n` +
-                `build in the ${where}: ${lay.timings.layoutMs.toFixed(1)} ms layout, ${lay.timings.meshMs.toFixed(1)} ms mesh, ${lay.timings.renderThreadMs.toFixed(1)} ms on the render thread` : '');
+            (lay ? `layout z${lay.zoom.toFixed(2)}\n  ${lay.stats.vertices} verts, ${lay.stats.edgesBuilt}/${lay.stats.edges} edges\n` +
+                `build in the ${where}\n` +
+                `  ${lay.timings.layoutMs.toFixed(1)} ms layout, ${lay.timings.meshMs.toFixed(1)} ms mesh\n` +
+                `  ${lay.timings.renderThreadMs.toFixed(1)} ms on the render thread` : '');
     };
 
     async function applyVisibility() {
@@ -184,6 +186,11 @@ async function main() {
         for (const z of [10, 12, 14, 16, 18]) stops.push(z, mul ? ['*', mul, f(z)] : f(z));
         return ['interpolate', ['linear'], ['zoom'], ...stops];
     };
+    // Dashes on the native side too, so the comparison is only about lanes.
+    const dashedRoutes = [...full.routes].filter(([, meta]) => meta.dash);
+    const dottedRoutes = dashedRoutes.filter(([, meta]) => meta.dash![0] === 0).map(([id]) => id);
+    const casingGap = (gap: number, z: number) => (gap * widthExpr(z)) / (widthExpr(z) + 2);
+    const nativeLayers = () => map.getStyle().layers.filter((l) => l.id.startsWith('native-')).map((l) => l.id);
     function updateNative() {
         const src = map.getSource('native-lanes') as maplibregl.GeoJSONSource | undefined;
         if (src) src.setData(nativeGeoJSON());
@@ -194,14 +201,48 @@ async function main() {
         const vis = mode === 'native' ? 'visible' : 'none';
         map.addLayer({
             id: 'native-casing', type: 'line', source: 'native-lanes',
+            filter: ['!', ['in', ['get', 'route'], ['literal', dottedRoutes]]],
             layout: {'line-join': 'round', 'line-cap': 'round', visibility: vis},
             paint: {'line-color': '#2a2a2a', 'line-width': zoomInterp((z) => widthExpr(z) + 2), 'line-offset': zoomInterp(spacingExpr, ['get', 'lanes'])},
         });
         map.addLayer({
             id: 'native-fill', type: 'line', source: 'native-lanes',
+            filter: ['!', ['in', ['get', 'route'], ['literal', dashedRoutes.map(([id]) => id)]]],
             layout: {'line-join': 'round', 'line-cap': 'round', visibility: vis},
             paint: {'line-color': ['get', 'color'], 'line-width': zoomInterp(widthExpr), 'line-offset': zoomInterp(spacingExpr, ['get', 'lanes'])},
         });
+        // One layer per dashed route, because line-cap is a layout property.
+        // A zero-length dash needs a round cap to show at all, which is how
+        // the layer draws its dots too.
+        for (const [id, meta] of dashedRoutes) {
+            const onRoute = ['==', ['get', 'route'], id] as any;
+            const offset = zoomInterp(spacingExpr, ['get', 'lanes']);
+            if (meta.dash![0] === 0) {
+                // A dotted casing, so each dot is cased as the layer cases
+                // it. The dash array scales with the wider casing line, so
+                // the gap shrinks by the width ratio. MapLibre sizes dashes
+                // by the width at the integer zoom, so the steps fall there.
+                const gap: any[] = ['step', ['zoom'], ['literal', [0, casingGap(meta.dash![1], 10)]]];
+                for (let z = 11; z <= 18; z++) gap.push(z, ['literal', [0, casingGap(meta.dash![1], z)]]);
+                map.addLayer({
+                    id: `native-dotcasing-${id}`, type: 'line', source: 'native-lanes', filter: onRoute,
+                    layout: {'line-join': 'round', 'line-cap': 'round', visibility: vis},
+                    paint: {'line-color': '#2a2a2a', 'line-width': zoomInterp((z) => widthExpr(z) + 2), 'line-offset': offset, 'line-dasharray': gap as any},
+                });
+            }
+            if (meta.dashColor) {
+                map.addLayer({
+                    id: `native-gap-${id}`, type: 'line', source: 'native-lanes', filter: onRoute,
+                    layout: {'line-join': 'round', 'line-cap': 'round', visibility: vis},
+                    paint: {'line-color': meta.dashColor, 'line-width': zoomInterp(widthExpr), 'line-offset': offset},
+                });
+            }
+            map.addLayer({
+                id: `native-dash-${id}`, type: 'line', source: 'native-lanes', filter: onRoute,
+                layout: {'line-join': 'round', 'line-cap': meta.dash![0] === 0 ? 'round' : meta.dashCap ?? 'butt', visibility: vis},
+                paint: {'line-color': meta.color, 'line-width': zoomInterp(widthExpr), 'line-offset': offset, 'line-dasharray': meta.dash!},
+            });
+        }
         map.addLayer(layer as any);
         // Labels follow the lanes through a GeoJSON source refreshed after each build.
         map.addSource('lane-labels', {type: 'geojson', data: {type: 'FeatureCollection', features: []}});
@@ -256,7 +297,7 @@ async function main() {
         el.addEventListener('change', (ev) => {
             const v = (ev.target as HTMLInputElement).value;
             map.setLayoutProperty('lanes', 'visibility', v === 'lanes' ? 'visible' : 'none');
-            for (const id of ['native-casing', 'native-fill']) map.setLayoutProperty(id, 'visibility', v === 'native' ? 'visible' : 'none');
+            for (const id of nativeLayers()) map.setLayoutProperty(id, 'visibility', v === 'native' ? 'visible' : 'none');
         }));
     (document.getElementById('basemap') as HTMLInputElement).addEventListener('change', (ev) => {
         const on = (ev.target as HTMLInputElement).checked;
