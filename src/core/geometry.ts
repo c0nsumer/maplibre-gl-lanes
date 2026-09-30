@@ -43,7 +43,14 @@ export function endDirection(p: Polyline): Vec {
 
 /** Trim both ends by length; cuts that would leave less than `keepFraction` are scaled down together. */
 export function trimPolyline(p: Polyline, fromStart: number, fromEnd: number, keepFraction = 0.2): Polyline {
-    const total = polylineLength(p);
+    // Segment lengths once: the total, both cut points and the vertex scan all walk the same sums.
+    const n = p.length / 2;
+    const seg = new Float64Array(Math.max(0, n - 1));
+    let total = 0;
+    for (let i = 0; i < n - 1; i++) {
+        seg[i] = Math.hypot(p[i * 2 + 2] - p[i * 2], p[i * 2 + 3] - p[i * 2 + 1]);
+        total += seg[i];
+    }
     if (total <= 0) return p.slice();
     const maxCut = total * (1 - keepFraction);
     if (fromStart + fromEnd > maxCut) {
@@ -51,18 +58,33 @@ export function trimPolyline(p: Polyline, fromStart: number, fromEnd: number, ke
         fromStart *= s;
         fromEnd *= s;
     }
-    const startPt = pointAlong(p, fromStart);
-    const endPt = pointAlong(p, total - fromEnd);
+    const startPt = pointAlongSegments(p, seg, fromStart);
+    const endPt = pointAlongSegments(p, seg, total - fromEnd);
     const out: Polyline = [startPt.x, startPt.y];
     let acc = 0;
-    for (let i = 2; i < p.length; i += 2) {
-        acc += Math.hypot(p[i] - p[i - 2], p[i + 1] - p[i - 1]);
+    for (let i = 0; i < n - 1; i++) {
+        acc += seg[i];
         if (acc > fromStart && acc < total - fromEnd) {
-            out.push(p[i], p[i + 1]);
+            out.push(p[i * 2 + 2], p[i * 2 + 3]);
         }
     }
     out.push(endPt.x, endPt.y);
     return out;
+}
+
+/** `pointAlong` with the segment lengths already known. */
+function pointAlongSegments(p: Polyline, seg: Float64Array, dist: number): {x: number; y: number} {
+    if (dist <= 0) return {x: p[0], y: p[1]};
+    let acc = 0;
+    for (let i = 0; i < seg.length; i++) {
+        const s = seg[i];
+        if (acc + s >= dist) {
+            const t = s > 0 ? (dist - acc) / s : 0;
+            return {x: p[i * 2] + (p[i * 2 + 2] - p[i * 2]) * t, y: p[i * 2 + 1] + (p[i * 2 + 3] - p[i * 2 + 1]) * t};
+        }
+        acc += s;
+    }
+    return {x: p[p.length - 2], y: p[p.length - 1]};
 }
 
 export function pointAlong(p: Polyline, dist: number): {x: number; y: number} {
