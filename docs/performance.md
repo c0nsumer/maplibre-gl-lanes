@@ -9,11 +9,10 @@ phone.
 The desktop figures were taken in Node.js 22 on a Linux machine, against
 the fixtures in `test/fixtures`. They use the demo's lane widths: a 2 px
 fill at z10, growing to 7 px at z18, with spacing one pixel wider. Device
-figures name their hardware where they appear. Every desktop figure comes
-from the code as it stands. The device figures were taken on earlier
-builds, and a section that names its build measured that one.
-"Reproducing", at the end, says how to take them again on your own data
-and your own device.
+figures name their hardware where they appear. Every figure comes from
+the code as it stands, except the phone figures in "The draw", which were
+taken at 1.0.0. The draw has not changed since. "Reproducing", at the
+end, says how to take them again on your own data and your own device.
 
 ## The fixtures
 
@@ -63,18 +62,21 @@ visible and the map at rest. Each is the median of the probe's runs.
 
 | What | iPhone 16 | Pixel 8 |
 |---|---|---|
-| Build the line graph, main thread | 23 ms | 49 ms |
-| Full solve in the worker, call to answer | 203 ms | 116 ms |
-| The same solve on the main thread | 158 ms | 134 ms |
-| Seeded re-solve with the busiest route hidden | 171 ms | 97 ms |
-| Worker solve while the main thread spins for 1000 ms | 1004 ms | 1000 ms |
-| A fresh worker's first round trip, the layer's own script | 16 ms | 34 ms |
+| Build the line graph, main thread | 15 ms | 37 ms |
+| Full solve in the worker, call to answer | 218 ms | 108 ms |
+| The same solve on the main thread | 164 ms | 119 ms |
+| Seeded re-solve with the busiest route hidden | 201 ms | 107 ms |
+| Worker solve while the main thread spins for 1000 ms | 1001 ms | 1001 ms |
+| A fresh worker's first round trip, the layer's own script | 8 ms | 28 ms |
 
-The solver itself runs at much the same speed in both engines. What the
-worker adds on the iPhone is about 45 ms of round trip on a 158 ms solve,
-and spawning one costs 16 ms. A solve keeps running while the main thread
-is busy: the spinning main thread neither stalled it nor added to it. So
-a re-order after a route toggle is done in about 0.2 s on either phone.
+The solve itself, on the main thread, is 164 ms in Safari's engine and
+119 ms in Chrome's. What the worker adds on the iPhone is about 55 ms of
+round trip on that solve, and spawning one costs 8 ms. On the Pixel the
+solve in the worker came in under the one on the main thread, so its
+round trip is inside the spread between runs. A solve keeps running while
+the main thread is busy: the spinning main thread neither stalled it nor
+added to it. So a re-order after a route toggle is done in about 0.2 s on
+either phone.
 
 ## Layout and mesh per zoom
 
@@ -230,133 +232,52 @@ behind it.
 
 ## Measured on a phone
 
-Two Chrome performance traces from a Pixel 8 running the RAMBA map inside
-a full map application, so the numbers include what the map itself does in
-the same frames.
+An iPhone 16 in Safari 27 and a Pixel 8 in Chrome 154, on the deployed
+RAMBA map of trailmaps.app, each driven through the same run of
+`scripts/device-probe.js`: two pans and three zoom changes over about
+nine seconds, the layer sampled once per animation frame, then 200
+`queryLane` calls. The map application runs in the same frames, so the
+frame figures include what it does. The iPhone reports four cores, a
+device pixel ratio of 3 and a 393 by 695 CSS viewport, with "Apple GPU"
+as the renderer. The Pixel reports nine cores, a device pixel ratio of
+2.625 and a 411 by 808 CSS viewport, on a Mali-G715. Both have WebGL2.
+Safari coarsens `performance.now()` to 1 ms, so the iPhone's figures are
+totals over many events rather than single readings. Chrome's timer is
+good to 0.1 ms.
 
-"Before" is 2026-09-17: 42 s of panning and pinching, with the layout and
-the mesh built inside the render call. "Now" is 2026-09-18 with the plugin
-at b403f97: 137 s of load, slow pans, fast flicks, pinches between z13 and
-z17, taps on lanes and a route toggle. The second is longer and pinches
-much more, so compare what a task or a rebuild cost, not the totals.
-
-| What | Before | Now |
+| What | iPhone 16 | Pixel 8 |
 |---|---|---|
-| Rebuilds | 89 | 233 |
-| Where a rebuild runs | the render thread | a worker |
-| Rebuild work on the render thread | median 18 ms inside a 31 ms task | 142 ms over the whole trace, about 0.6 ms a rebuild, of which the buffer upload is 10 ms |
-| Rebuild tasks over 32 ms | 40 of 89 | none |
-| Layout and mesh per rebuild | median 18 ms, longest 71 ms | in the worker: median 14.7 ms, p25 4.1 ms, p90 41.1 ms, longest 170.5 ms |
-| Plugin work per main-thread task | | median 0.30 ms, p90 0.90 ms, p99 18.8 ms, longest 76.3 ms |
-| Main-thread tasks with more than 8 ms of plugin work | | 25 of the 1073 that have any: 24 are full-extent lane features, one is the startup graph build |
-| Lane ordering, in its own worker | about 0.9 s | 0.6 s, longest task 290 ms |
-| Full-extent lane features | 0.33 s over the trace | 58 calls, 468 ms, median 5.9 ms, longest 54 ms |
-| Hit test (`queryLane`) | | 17 calls, median 0.7 ms |
-| Turning a worker's answer into paths | | 8 calls, median 0.4 ms |
-| Draw | 3 ms a frame | 251 ms over 137 s of interaction |
-
-The rebuild is off the render thread and stays off it: no main-thread task
-in the second trace carries rebuild work beyond posting the request and
-uploading the buffers. In the worker, a rebuild at an unchanged zoom is
-the p25 figure and below, a few milliseconds; the median and the tail are
-the pinches, where every rebuild starts a new zoom and the cache has
-nothing to give it. The layer's own `timings.renderThreadMs` read 0.2 ms on the
-device against 59.7 ms of layout and 17 ms of mesh in the worker for the
-first, cold build, and 0.8 ms of layout for a rebuild after a pan at an
-unchanged zoom.
-
-What was left on the main thread in that trace is
-`laneFeatures({extent: 'full'})`, which lays out every lane of a route
-over the whole graph and is what a highlight source under one route is
-usually fed from. It is cached per zoom and route set, and a pinch ends on
-a zoom it has not seen, so the 58 calls there are mostly one per
-`zoomend`: 468 ms in total and up to 54 ms in one task, which made it the
-plugin's longest main-thread task by a wide margin.
-
-`laneFeaturesAsync` has since moved that build to the worker as well. The
-work is the same size, a median of 24 ms against 25 ms for one RAMBA route
-over seven zooms in Node, but none of it lands on the thread that draws.
-The synchronous call is still there for callers without a worker, and is
-what `laneFeaturesAsync` falls back to.
-
-A third trace on 2026-09-18 confirms it on the device: 96 s of load,
-pinches with a route selected, pans and a route switch, on a build whose
-highlight source asks for its features with `laneFeaturesAsync`. A fourth,
-an hour later against the deployed site rather than a local test build,
-says the same: 62 s of interaction, one main-thread task over 8 ms of
-plugin work (the graph build at load, 50 ms inside a 264 ms load task),
-none with a finger on the glass, and plugin work per task at a median of
-0.36 ms, a p90 of 1.04 and a p99 of 4.63. The table's After column is
-the third trace.
-
-| What | Before the ribbon moved | After |
-|---|---|---|
-| Main-thread tasks over 8 ms of plugin work | 25, of which 20 with a finger on the glass | 1, the startup graph build, while idle |
-| Plugin work per main-thread task | median 0.30 ms, p90 0.90, p99 18.8, longest 76.3 | median 0.36 ms, p90 1.35, p99 4.43, longest 52.8 |
-| Full-extent lane features, on the render thread | 58 calls, 468 ms, about 8 ms a call, longest 54 ms | 15 calls, 13 ms, a median of 0.6 ms a call, longest 2.6 ms |
-| Layout worker | 233 tasks, median 14.7 ms, p90 41.1 | 153 tasks, median 15.3 ms, p90 49.2, the ribbon builds among them |
-
-What the render thread still pays for a full extent is the request and
-turning the paths into GeoJSON. The longest plugin task left is the graph
-build at load, 52.8 ms inside the application's 237 ms load task;
-`buildLineGraph` runs where it is called, and the caller chooses when.
-That meets the bar this work set itself: no main-thread task carries more
-than 8 ms of plugin work while the map is being panned.
-
-The long main-thread tasks that remain during a gesture belong to the map
-application, not to the layer. In the fourth trace the longest of them was
-51.6 ms and carried 1.0 ms of plugin work; the next five carried between
-0.2 and 5.7 ms. The layer's own share of a frame is now the draw, which
-came to 135 ms over 62 s of interaction.
-
-## Measured on an iPhone
-
-An iPhone 16 in Safari 27, on the deployed RAMBA and Glacial Hills maps
-of trailmaps.app. The RAMBA column was taken 2026-09-29 with the plugin at
-1.0.0; the Glacial Hills column 2026-09-19 at 34a0aa3, on the same device.
-The device reports four cores, a device pixel ratio of 3, and a 393 by 695
-CSS viewport. WebGL2 is there and the renderer is "Apple GPU". These are
-the numbers from a WebKit engine; everything above is V8.
-
-They come from a script rather than a trace. It drives the map through a
-fixed sequence of two pans and three zoom changes over about nine
-seconds, samples the layer once per animation frame, and then times 200
-`queryLane` calls. Safari coarsens `performance.now()` to 1 ms, so every
-figure here is a total over many events rather than a single reading.
-
-| What | RAMBA | Glacial Hills |
-|---|---|---|
-| Edges in the full graph | 597 | 172 |
-| Vertices in the built extent | 4579 | 4640 |
+| Edges in the full graph | 597 | 597 |
+| Vertices in the built extent | 4397 | 4884 |
 | Builds in the run | 8 | 8 |
-| Build work on the render thread | 2 ms in total | 2 ms in total |
-| Layout, in the worker | 246 ms in total, longest 82 ms | 183 ms in total, longest 36 ms |
-| Mesh, in the worker | 84 ms in total, longest 31 ms | 47 ms in total, longest 13 ms |
-| Frames | 485 | 512 |
-| Frame interval | median 17 ms, p95 19 ms | median 17 ms, p95 17 ms |
-| Frames over 32 ms | 8 | 3 |
-| Frames over 100 ms | 1 | none |
-| Longest frame | 117 ms | 60 ms |
-| Hit test (`queryLane`) | 200 calls, 99 ms, 0.5 ms each | 200 calls, 86 ms, 0.43 ms each |
+| Build work on the render thread | 3 ms in total | 1.8 ms in total |
+| Layout, in the worker | 220 ms in total, longest 54 ms | 360 ms in total, longest 93 ms |
+| Mesh, in the worker | 81 ms in total, longest 19 ms | 93 ms in total, longest 25 ms |
+| Frames | 482 | 492 |
+| Frame interval | median 17 ms, p95 20 ms | median 16.7 ms, p95 20.5 ms |
+| Frames over 32 ms | 9 | 8 |
+| Frames over 100 ms | 3 | 2 |
+| Longest frame | 115 ms | 146 ms |
+| Hit test (`queryLane`) | 200 calls, 93 ms, 0.47 ms each | 200 calls, 55 ms, 0.28 ms each |
 
-The bar holds on iOS as it does on Android. The work on the render thread
-is the buffer upload and the mesh swap, and it came to about a quarter of
-a millisecond a build on both maps. The layout and the mesh run in the
-worker and never touch a frame.
+The built extents differ because the viewports do. The work on the
+render thread is the request, the buffer upload and the mesh swap, and it
+came to under half a millisecond a build on both phones. The layout and
+the mesh run in the worker and never touch a frame. The median frame is
+the refresh interval on both phones, and the 95th percentile is within
+four milliseconds of it, so the distribution is tight and only the tail
+moves.
 
-Glacial Hills held the refresh interval for 95 percent of its frames, and
-RAMBA's 95th percentile was 19 ms. The median is the refresh interval on
-both, so the distribution is tight and only the tail moves.
+The tail is not the plugin's. Its render-thread work over the whole run
+was 3 ms on the iPhone and 1.8 ms on the Pixel, so it cannot account for
+one frame of 115 or 146 ms. Every frame over 32 ms fell in the first
+frame of the run or where a zoom settled: on the iPhone six in the second
+zoom-in and two in the zoom-out, on the Pixel four and one, with two more
+of 32 to 40 ms as the Pixel returned to the start. How many frames pass
+100 ms varies from run to run: eight earlier runs at 1.0.0, four on each
+phone, had none.
 
-The tail is not the plugin's. The same run on a Pixel 8 in Chrome 154
-gave the same shape: median 16.7 ms, p95 21 ms, one frame of 138 ms. On
-both phones the plugin's render-thread work over the whole run was 2 ms,
-so it cannot account for a frame of 117 ms. The frame over 100 ms is
-also a one-off: four more runs on the iPhone, taken under a Safari
-timeline recording, had a longest frame of 60, 72, 32 and 38 ms, and four
-more on the Pixel, each under a Chrome trace, 34, 38, 22 and 22 ms.
-
-What the recordings show about the longer frames that remain: on the
+Recordings of the same run at 1.0.0 show what those frames hold. On the
 iPhone the run's worst were four frames in a row of 41 to 56 ms as the
 zoom-in settled, each holding one promise callback of 24 to 42 ms and a
 composite of about the same length, right after a worker's message. That
@@ -366,24 +287,22 @@ run, WebKit's sampler attributed 347 ms of main-thread time to MapLibre,
 66 ms to the plugin and 17 ms to the contour layer. The Pixel's CPU
 profile over its 9.4 s run reads the same way: 2.1 s in MapLibre, 83 ms
 in the plugin, 79 ms in the map application, with the longest
-main-thread task during the motion at 34 ms.
-
-Against the Pixel 8 on the same RAMBA map: the cold layout was 82 ms
-here and 53 to 81 ms there, the mesh 31 ms and 22 to 28 ms, and the cost
-per build on the render thread about 0.25 ms on both. iOS is a little
-slower where the work is and the same on the thread that matters.
+main-thread task during the motion at 34 ms. In those recordings no
+main-thread task carried more than 8 ms of plugin work while the map was
+being panned. The longest plugin task on the main thread is the graph
+build at load, in the "Startup" table; `buildLineGraph` runs where it is
+called, and the caller chooses when.
 
 Two things this does not cover. The script drives the map with `easeTo`,
 which is not a pinch. And a `queryLane` timing says nothing about whether
 a finger hits the lane it was aimed at. Pinch behavior and touch accuracy
-are still to be checked by hand.
+are checked by hand.
 
 ## Lane features
 
 `laneFeatures({extent: 'full'})` lays out every lane of the requested
 routes for one zoom: 16 to 29 ms for all of RAMBA depending on zoom on
-the desktop, a median of 5.9 ms and up to 54 ms on the Pixel 8 above. The
-result is cached per zoom and route set. A single route's full extent is
+the desktop. The result is cached per zoom and route set. A single route's full extent is
 the same layout with only that route's pieces emitted, so it costs about
 the same. `laneFeatures` runs it on the thread that calls it;
 `laneFeaturesAsync` asks the worker for it and resolves when it is ready,
@@ -422,11 +341,11 @@ split edges and so change the problem.
 For a phone, open a console attached to the page (Safari's Web Inspector
 for an iPhone, `chrome://inspect` for an Android phone) and paste
 `scripts/device-probe.js`, with the page visible on the device. It prints
-the iPhone table above, and lists every frame over 32 ms with the motion
-it fell in and its time since the run started, so a recording taken
-during the run can be read at that spot. A backgrounded tab suspends
-`requestAnimationFrame`, and the layer only builds inside the render
-call, so a hidden page reports zero frames and zero builds.
+the table in "Measured on a phone", and lists every frame over 32 ms
+with the motion it fell in and its time since the run started, so a
+recording taken during the run can be read at that spot. A backgrounded
+tab suspends `requestAnimationFrame`, and the layer only builds inside
+the render call, so a hidden page reports zero frames and zero builds.
 
 For where a lane ordering's time goes, paste `scripts/order-probe.js`
 into the same console with the map at rest. It prints the ordering table
@@ -466,5 +385,4 @@ the published `dist/maplibre-gl-lanes.js` and run
 `scripts/profile-trace.py` on it with the matching source map. It
 attributes the profile to the plugin's source functions, splits every
 main-thread task with plugin work into layout, mesh and draw, and
-reports the worker's ordering time; the phone table above is its
-output.
+reports the worker's ordering time.

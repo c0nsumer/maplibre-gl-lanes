@@ -25,6 +25,9 @@ follows Keep a Changelog, and the project uses semantic versioning.
   of the RAMBA fixture still takes about a sixth less than in 1.0.0. The
   speedups change no output: every lane, connector and mesh is the same to
   the last bit as without them. `scripts/layout-dump.ts` is the check.
+  On an iPhone 16 the graph build of that network takes a third less than
+  in 1.0.0 and on a Pixel 8 a quarter less; a lane ordering there, second
+  pass included, takes about as long as in 1.0.0.
 
 ### Added
 
