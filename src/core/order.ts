@@ -83,6 +83,11 @@ interface Terms {
     nextOut: Uint8Array;
     /** DIFF_NEXT: 1 when route a must be on the left for the pair not to cross. */
     aLeft: Uint8Array;
+    /** Offsets into the flat position array for route a and b on the edge, and on the next edge. */
+    posA: Int32Array;
+    posB: Int32Array;
+    nextA: Int32Array;
+    nextB: Int32Array;
 }
 
 interface TermBuf {
@@ -121,12 +126,29 @@ export class LaneOrderer {
     /** Route indices follow sorted ids, so comparing indices breaks ties as ids would. */
     private readonly routeIds: string[];
     private readonly routeIndex: Map<string, number>;
+    /**
+     * Every edge's lanes and lane positions live in two flat arrays, `lanes[e]` and `pos[e]` being
+     * views into them, so the cost evaluation can index by edge and route without a pointer chase.
+     */
+    private readonly laneBuf: Int32Array;
+    private readonly laneStart: Int32Array;
+    private readonly laneCount: Int32Array;
+    private readonly posBuf: Int32Array;
     private readonly lanes: Int32Array[];
     private readonly pos: (Int32Array | null)[];
     /** Port index of edge e at its a node (2e) and b node (2e + 1). */
     private readonly portAt: Int32Array;
     /** Per node and port, per route index: the ports the route continues to. */
     private readonly next: (number[] | undefined)[][][];
+    /**
+     * The same continuations flat, for the swap walk: the ports of node n start at `portBase[n]`,
+     * a port's edge is `portEdge`, and the ports route r continues to from port q are
+     * `nextList[nextStart[q * R + r] .. nextStart[q * R + r + 1])`, in the order `next` lists them.
+     */
+    private readonly portBase: Int32Array;
+    private readonly portEdge: Int32Array;
+    private readonly nextStart: Int32Array;
+    private readonly nextList: Int32Array;
     private readonly terms: Terms;
     /** Per seeded edge: lane position of each route index in the initial order (-1 when unseeded). */
     private seedPos: (Int32Array | null)[] = [];
@@ -146,8 +168,17 @@ export class LaneOrderer {
         this.routeIds = [...ids].sort();
         this.routeIndex = new Map(this.routeIds.map((r, i) => [r, i]));
         const R = this.routeIds.length;
-        this.lanes = g.edges.map((e) => new Int32Array(e.routes.length));
-        this.pos = g.edges.map((e) => (e.routes.length > 1 ? new Int32Array(R).fill(-1) : null));
+        const E = g.edges.length;
+        this.laneStart = new Int32Array(E + 1);
+        this.laneCount = new Int32Array(E);
+        for (let e = 0; e < E; e++) {
+            this.laneCount[e] = g.edges[e].routes.length;
+            this.laneStart[e + 1] = this.laneStart[e] + this.laneCount[e];
+        }
+        this.laneBuf = new Int32Array(this.laneStart[E]);
+        this.posBuf = new Int32Array(E * R).fill(-1);
+        this.lanes = g.edges.map((e) => this.laneBuf.subarray(this.laneStart[e.id], this.laneStart[e.id + 1]));
+        this.pos = g.edges.map((e) => (e.routes.length > 1 ? this.posBuf.subarray(e.id * R, (e.id + 1) * R) : null));
         this.portAt = new Int32Array(2 * g.edges.length).fill(-1);
         for (const n of g.nodes) n.ports.forEach((p, i) => (this.portAt[2 * p.edge + (p.end === 'a' ? 0 : 1)] = i));
         this.next = g.nodes.map((node) => {
@@ -163,6 +194,24 @@ export class LaneOrderer {
             }
             return next;
         });
+        this.portBase = new Int32Array(g.nodes.length + 1);
+        for (let n = 0; n < g.nodes.length; n++) this.portBase[n + 1] = this.portBase[n] + g.nodes[n].ports.length;
+        const P = this.portBase[g.nodes.length];
+        this.portEdge = new Int32Array(P);
+        this.nextStart = new Int32Array(P * R + 1);
+        const list: number[] = [];
+        for (let n = 0; n < g.nodes.length; n++) {
+            for (let pi = 0; pi < g.nodes[n].ports.length; pi++) {
+                const q = this.portBase[n] + pi;
+                this.portEdge[q] = g.nodes[n].ports[pi].edge;
+                for (let r = 0; r < R; r++) {
+                    const l = this.next[n][pi][r];
+                    if (l) for (const p of l) list.push(p);
+                    this.nextStart[q * R + r + 1] = list.length;
+                }
+            }
+        }
+        this.nextList = Int32Array.from(list);
         this.terms = this.buildTerms();
         this.load();
     }
@@ -219,6 +268,15 @@ export class LaneOrderer {
             }
         });
         start[g.nodes.length] = buf.kind.length;
+        const R = this.routeIds.length;
+        const T = buf.kind.length;
+        const posA = new Int32Array(T), posB = new Int32Array(T), nextA = new Int32Array(T), nextB = new Int32Array(T);
+        for (let i = 0; i < T; i++) {
+            posA[i] = buf.edge[i] * R + buf.a[i];
+            posB[i] = buf.edge[i] * R + Math.max(0, buf.b[i]);
+            nextA[i] = Math.max(0, buf.next[i]) * R + buf.a[i];
+            nextB[i] = Math.max(0, buf.next[i]) * R + Math.max(0, buf.b[i]);
+        }
         return {
             start,
             kind: Uint8Array.from(buf.kind),
@@ -229,6 +287,7 @@ export class LaneOrderer {
             next: Int32Array.from(buf.next),
             nextOut: Uint8Array.from(buf.nextOut),
             aLeft: Uint8Array.from(buf.aLeft),
+            posA, posB, nextA, nextB,
         };
     }
 
@@ -270,39 +329,38 @@ export class LaneOrderer {
 
     private evalNode(n: number): number {
         const t = this.terms;
-        const w = this.w;
+        const tEdge = t.edge, tOut = t.out, tKind = t.kind, tNext = t.next, tNextOut = t.nextOut, tALeft = t.aLeft;
+        const tPosA = t.posA, tPosB = t.posB, tNextA = t.nextA, tNextB = t.nextB;
+        const pos = this.posBuf, count = this.laneCount;
+        const wPeriphery = this.w.periphery, wDiff = this.w.diffSegmentCrossing, wSame = this.w.sameSegmentCrossing, wSep = this.w.separation;
         let cost = 0;
         for (let i = t.start[n], end = t.start[n + 1]; i < end; i++) {
-            const e = t.edge[i];
-            const pos = this.pos[e]!;
-            const k = this.lanes[e].length;
-            let pa = pos[t.a[i]];
-            if (!t.out[i]) pa = k - 1 - pa;
-            const kind = t.kind[i];
+            const k = count[tEdge[i]];
+            let pa = pos[tPosA[i]];
+            if (!tOut[i]) pa = k - 1 - pa;
+            const kind = tKind[i];
             if (kind === PERIPHERY) {
-                if (pa !== 0 && pa !== k - 1) cost += w.periphery;
+                if (pa !== 0 && pa !== k - 1) cost += wPeriphery;
                 continue;
             }
-            let pb = pos[t.b[i]];
-            if (!t.out[i]) pb = k - 1 - pb;
+            let pb = pos[tPosB[i]];
+            if (!tOut[i]) pb = k - 1 - pb;
             const aLeft = pa < pb;
             if (kind === DIFF_NEXT) {
-                if ((t.aLeft[i] === 1) !== aLeft) cost += w.diffSegmentCrossing;
+                if ((tALeft[i] === 1) !== aLeft) cost += wDiff;
                 continue;
             }
-            const f = t.next[i];
-            const fpos = this.pos[f]!;
-            let fa = fpos[t.a[i]];
-            let fb = fpos[t.b[i]];
-            if (!t.nextOut[i]) {
-                const kf = this.lanes[f].length;
+            let fa = pos[tNextA[i]];
+            let fb = pos[tNextB[i]];
+            if (!tNextOut[i]) {
+                const kf = count[tNext[i]];
                 fa = kf - 1 - fa;
                 fb = kf - 1 - fb;
             }
             // Seen outward from both ports, a pair that keeps its sides has
             // flipped order, so the same order is a crossing.
-            if ((fa < fb) === aLeft) cost += w.sameSegmentCrossing;
-            else if (Math.abs(pa - pb) === 1 && Math.abs(fa - fb) !== 1) cost += w.separation;
+            if ((fa < fb) === aLeft) cost += wSame;
+            else if (Math.abs(pa - pb) === 1 && Math.abs(fa - fb) !== 1) cost += wSep;
         }
         return cost;
     }
@@ -404,6 +462,8 @@ export class LaneOrderer {
         const b = this.lanes[e][i + 1];
         const stack = this.stack;
         const edgeStamp = this.edgeStamp;
+        const {portBase, portEdge, nextStart, nextList} = this;
+        const R = this.routeIds.length;
         stack.length = 0;
         stack.push(e);
         while (stack.length) {
@@ -423,11 +483,20 @@ export class LaneOrderer {
                 const nodeId = side === 0 ? edge.a : edge.b;
                 const pi = this.portAt[2 * cur + side];
                 if (pi < 0) continue;
-                const nextOf = this.next[nodeId][pi];
-                const na = nextOf[a];
-                const nb = nextOf[b];
-                if (!na || !nb) continue;
-                for (const p of na) if (nb.includes(p)) stack.push(g.nodes[nodeId].ports[p].edge);
+                const q = portBase[nodeId] + pi;
+                const a0 = nextStart[q * R + a], a1 = nextStart[q * R + a + 1];
+                const b0 = nextStart[q * R + b], b1 = nextStart[q * R + b + 1];
+                if (a0 === a1 || b0 === b1) continue;
+                // Every port both routes continue to, in a's order: the pair stays a pair there.
+                for (let x = a0; x < a1; x++) {
+                    const p = nextList[x];
+                    for (let y = b0; y < b1; y++) {
+                        if (nextList[y] === p) {
+                            stack.push(portEdge[portBase[nodeId] + p]);
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
