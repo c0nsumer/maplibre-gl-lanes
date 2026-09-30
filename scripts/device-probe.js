@@ -12,7 +12,7 @@
  * It expects the page to expose `laneLayer` and `map`; rename them at the
  * top of the function if the host application uses others.
  *
- * Safari coarsens performance.now() to 1 ms, so everything is totalled
+ * Safari coarsens performance.now() to 1 ms, so everything is totaled
  * over many events. `timerGranularityMs` reports what the engine gave.
  */
 (async () => {
@@ -80,7 +80,7 @@
         vertices: builds.length ? builds[builds.length - 1].verts : null,
     };
 
-    // 200 taps, totalled so a 1 ms timer averages out. `hits` only confirms
+    // 200 taps, totaled so a 1 ms timer averages out. `hits` only confirms
     // that lanes are found.
     const t0 = performance.now(); let hits = 0;
     for (let i = 0; i < 200; i++) if (L.queryLane({x: (i * 37) % innerWidth, y: (i * 53) % innerHeight}, 8)) hits++;

@@ -17,7 +17,7 @@ export interface StabilizeOptions {
 }
 
 /** Position of route r on an edge in lanes before the baseline, positive = left of a->b. */
-function centredPos(order: string[], r: string): number {
+function centeredPos(order: string[], r: string): number {
     const k = order.length;
     return (k - 1) / 2 - order.indexOf(r);
 }
@@ -46,8 +46,8 @@ export function stabilizeLanes(g: LineGraph, opts: StabilizeOptions = {}): void 
             if (u === v) continue;
             const su = pu.end === 'b' ? 1 : -1; // arrives traveling a->b
             const sv = pv.end === 'a' ? 1 : -1; // leaves traveling a->b
-            const posU = centredPos(u.order, t.route);
-            const posV = centredPos(v.order, t.route);
+            const posU = centeredPos(u.order, t.route);
+            const posV = centeredPos(v.order, t.route);
             terms[u.id].push({other: v.id, coef: sv / su, constant: (sv * posV - su * posU) / su});
             terms[v.id].push({other: u.id, coef: su / sv, constant: (su * posU - sv * posV) / sv});
         }
@@ -97,7 +97,7 @@ export function lateralMovement(g: LineGraph): number {
             const v = g.edges[pv.edge];
             const su = pu.end === 'b' ? 1 : -1;
             const sv = pv.end === 'a' ? 1 : -1;
-            sum += Math.abs(su * (centredPos(u.order, t.route) + (u.baseline ?? 0)) - sv * (centredPos(v.order, t.route) + (v.baseline ?? 0)));
+            sum += Math.abs(su * (centeredPos(u.order, t.route) + (u.baseline ?? 0)) - sv * (centeredPos(v.order, t.route) + (v.baseline ?? 0)));
         }
     }
     return sum;

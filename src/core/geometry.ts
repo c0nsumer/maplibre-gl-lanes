@@ -72,7 +72,7 @@ export function trimPolyline(p: Polyline, fromStart: number, fromEnd: number, ke
     return out;
 }
 
-/** `pointAlong` with the segment lengths already known. */
+/** The point `dist` along a polyline whose segment lengths `seg` are already known. */
 function pointAlongSegments(p: Polyline, seg: Float64Array, dist: number): {x: number; y: number} {
     if (dist <= 0) return {x: p[0], y: p[1]};
     let acc = 0;
@@ -83,20 +83,6 @@ function pointAlongSegments(p: Polyline, seg: Float64Array, dist: number): {x: n
             return {x: p[i * 2] + (p[i * 2 + 2] - p[i * 2]) * t, y: p[i * 2 + 1] + (p[i * 2 + 3] - p[i * 2 + 1]) * t};
         }
         acc += s;
-    }
-    return {x: p[p.length - 2], y: p[p.length - 1]};
-}
-
-export function pointAlong(p: Polyline, dist: number): {x: number; y: number} {
-    if (dist <= 0) return {x: p[0], y: p[1]};
-    let acc = 0;
-    for (let i = 2; i < p.length; i += 2) {
-        const seg = Math.hypot(p[i] - p[i - 2], p[i + 1] - p[i - 1]);
-        if (acc + seg >= dist) {
-            const t = seg > 0 ? (dist - acc) / seg : 0;
-            return {x: p[i - 2] + (p[i] - p[i - 2]) * t, y: p[i - 1] + (p[i + 1] - p[i - 1]) * t};
-        }
-        acc += seg;
     }
     return {x: p[p.length - 2], y: p[p.length - 1]};
 }

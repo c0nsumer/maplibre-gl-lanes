@@ -35,7 +35,7 @@ const route = (id: string, coords: [number, number][]) => ({
 
 describe('the centerline keeps the corners the data has', () => {
     it('does not round a square corner in a road', () => {
-        // A kilometre east, then a kilometre north, with a vertex at the turn.
+        // A kilometer east, then a kilometer north, with a vertex at the turn.
         const corner: Polyline = [0, 0, 400, 0, 400, -400];
         const rounded = smoothCatmullRom(corner, 5);
         const kept = smoothCatmullRom(corner, 5, 10, 3, 60);

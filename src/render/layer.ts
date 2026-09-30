@@ -448,8 +448,8 @@ export class LaneLayer implements CustomLayerInterface {
      * Lane geometry as GeoJSON LineStrings, one per lane piece, with
      * properties `route`, `name`, `color`, `direction`, `kind`, `edge`,
      * `lanes`, `routes` and the graph's `uniformProperties` (see
-     * docs/api.md). Lane positions depend on the zoom, so refresh on
-     * `zoomend`.
+     * docs/api.md). Lane positions depend on the zoom and on the build,
+     * so refresh on `moveend` and from `setOnBuild`.
      */
     laneFeatures(opts: LaneFeatureOptions = {}): GeoJSON.FeatureCollection {
         if (opts.extent === 'full') return this.fullLaneFeatures(opts);

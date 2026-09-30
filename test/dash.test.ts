@@ -149,7 +149,7 @@ describe('dash patterns', () => {
         layer.render(gl, args);
         const casing = style(16).width / 2 + style(16).casingWidth + 0.5;
         // A route is more than one pass when its ways look different, and
-        // a casing drawn after a neighbouring fill would show as a seam
+        // a casing drawn after a neighboring fill would show as a seam
         // where the two meet. So two casing passes of one route run back to
         // back, with no fill of that route between them.
         const batched = draws.some((d, i) => {

@@ -79,7 +79,7 @@ describe('connectors of routes turning together', () => {
     // was introduced for on 2026-09-16: before it, RAMBA at z16 had 10 of
     // 41 adjacent pairs more than a pixel off the pitch, in both
     // directions, and lanes visibly converged mid-turn.
-    it('keep a lane apart from its neighbour through the turn', () => {
+    it('keep a lane apart from its neighbor through the turn', () => {
         // The stagger itself is the 2 to 3 px seen at z18 and on MFO. The
         // one pair beyond that on RAMBA at z16 is a tight turn where the
         // lanes take different shapes, which the shared reference never

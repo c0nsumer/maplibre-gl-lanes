@@ -10,13 +10,13 @@ import type {GraphEdge, LineGraph} from './graph.js';
 import {startDirection, endDirection, ccwAngle, type Vec} from './geometry.js';
 
 export interface OrderOptions {
-    /** Two lines on the same edge swapping sides while continuing onto the same next edge. Default 4. */
+    /** Two routes on the same edge swapping sides while continuing onto the same next edge. Default 4. */
     sameSegmentCrossing?: number;
-    /** Two lines on one edge diverging onto different edges in the wrong order. Default 1. */
+    /** Two routes on one edge diverging onto different edges in the wrong order. Default 1. */
     diffSegmentCrossing?: number;
-    /** Adjacent lines that continue together but are no longer adjacent. Default 3. */
+    /** Adjacent routes that continue together but are no longer adjacent. Default 3. */
     separation?: number;
-    /** A line ending at a node while not being on the outside of its bundle. Default 0.5. */
+    /** A route ending at a node while not being on the outside of its bundle. Default 0.5. */
     periphery?: number;
     /** Simulated-annealing moves before the descents, shared by the independent components in proportion to their size. Default: 400 per edge that carries more than one route, at least 10000; 0 disables. */
     annealMoves?: number;
