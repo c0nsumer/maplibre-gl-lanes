@@ -76,7 +76,12 @@ class MeshBuilder {
         this.v[o + 6] = nx;
         this.v[o + 7] = ny;
         this.v[o + 8] = s;
-        this.c.set(color, this.nv * 4);
+        // Four stores beat a typed-array `set` call for a color this short.
+        const co = this.nv * 4;
+        this.c[co] = color[0];
+        this.c[co + 1] = color[1];
+        this.c[co + 2] = color[2];
+        this.c[co + 3] = color[3];
         return this.nv++;
     }
     tri(a: number, b: number, c: number) {
@@ -392,54 +397,58 @@ function tessellatePath(b: MeshBuilder, px: Polyline, anchorsPx: Polyline, color
         }
     };
 
-    const dir = (i: number, j: number): [number, number] => {
-        const dx = pts[j * 2] - pts[i * 2];
-        const dy = pts[j * 2 + 1] - pts[i * 2 + 1];
+    // Each segment's unit direction once: a vertex reads the segment before it and after it.
+    const sdx = new Float64Array(n - 1);
+    const sdy = new Float64Array(n - 1);
+    for (let i = 0; i < n - 1; i++) {
+        const dx = pts[i * 2 + 2] - pts[i * 2];
+        const dy = pts[i * 2 + 3] - pts[i * 2 + 1];
         const l = Math.hypot(dx, dy) || 1;
-        return [dx / l, dy / l];
-    };
+        sdx[i] = dx / l;
+        sdy[i] = dy / l;
+    }
 
     for (let i = 0; i < n; i++) {
         const hasPrev = i > 0;
         const hasNext = i < n - 1;
-        const dPrev = hasPrev ? dir(i - 1, i) : [0, 0];
-        const dNext = hasNext ? dir(i, i + 1) : [0, 0];
-        const nPrev: [number, number] = [dPrev[1], -dPrev[0]];
-        const nNext: [number, number] = [dNext[1], -dNext[0]];
+        const dPrevX = hasPrev ? sdx[i - 1] : 0, dPrevY = hasPrev ? sdy[i - 1] : 0;
+        const dNextX = hasNext ? sdx[i] : 0, dNextY = hasNext ? sdy[i] : 0;
+        const nPrevX = dPrevY, nPrevY = -dPrevX;
+        const nNextX = dNextY, nNextY = -dNextX;
 
         if (!hasPrev) {
-            fan(i, nNext[0], nNext[1], -nNext[0], -nNext[1], true);
-            pair(i, nNext[0], nNext[1], nNext[0], nNext[1], false);
+            fan(i, nNextX, nNextY, -nNextX, -nNextY, true);
+            pair(i, nNextX, nNextY, nNextX, nNextY, false);
             continue;
         }
         if (!hasNext) {
-            pair(i, nPrev[0], nPrev[1], nPrev[0], nPrev[1], true);
-            fan(i, nPrev[0], nPrev[1], -nPrev[0], -nPrev[1], false);
+            pair(i, nPrevX, nPrevY, nPrevX, nPrevY, true);
+            fan(i, nPrevX, nPrevY, -nPrevX, -nPrevY, false);
             continue;
         }
-        let jx = nPrev[0] + nNext[0];
-        let jy = nPrev[1] + nNext[1];
+        let jx = nPrevX + nNextX;
+        let jy = nPrevY + nNextY;
         const jl = Math.hypot(jx, jy);
         if (jl < 1e-9) {
-            pair(i, nPrev[0], nPrev[1], nPrev[0], nPrev[1], true);
-            fan(i, nPrev[0], nPrev[1], -nPrev[0], -nPrev[1], false);
-            pair(i, nNext[0], nNext[1], nNext[0], nNext[1], false);
+            pair(i, nPrevX, nPrevY, nPrevX, nPrevY, true);
+            fan(i, nPrevX, nPrevY, -nPrevX, -nPrevY, false);
+            pair(i, nNextX, nNextY, nNextX, nNextY, false);
             continue;
         }
         jx /= jl;
         jy /= jl;
-        const cosHalf = jx * nNext[0] + jy * nNext[1];
+        const cosHalf = jx * nNextX + jy * nNextY;
         const miterLen = cosHalf > 1e-6 ? 1 / cosHalf : Infinity;
         if (miterLen <= MITER_LIMIT) {
             pair(i, jx * miterLen, jy * miterLen, jx, jy, true);
         } else {
-            const cross = dPrev[0] * dNext[1] - dPrev[1] * dNext[0];
+            const cross = dPrevX * dNextY - dPrevY * dNextX;
             // Right turn on screen (cross > 0 in y-down): outside is the left side.
             const outsideLeft = cross > 0;
-            pair(i, nPrev[0], nPrev[1], nPrev[0], nPrev[1], true);
-            if (outsideLeft) fan(i, nPrev[0], nPrev[1], nNext[0], nNext[1], false);
-            else fan(i, -nPrev[0], -nPrev[1], -nNext[0], -nNext[1], false);
-            pair(i, nNext[0], nNext[1], nNext[0], nNext[1], false);
+            pair(i, nPrevX, nPrevY, nPrevX, nPrevY, true);
+            if (outsideLeft) fan(i, nPrevX, nPrevY, nNextX, nNextY, false);
+            else fan(i, -nPrevX, -nPrevY, -nNextX, -nNextY, false);
+            pair(i, nNextX, nNextY, nNextX, nNextY, false);
         }
     }
 }

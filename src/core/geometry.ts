@@ -150,62 +150,66 @@ export function offsetPolylineAnchored(p: Polyline, d: number, arcStepRad = Math
     const n = src.length / 2;
     if (n < 2 || d === 0) return {points: src.slice(), anchors: src.slice()};
 
-    const segs: number[][] = [];
+    // Offset segments, four numbers each, in one flat array rather than one array per segment.
+    const segs = new Float64Array((n - 1) * 4);
     for (let i = 0; i < n - 1; i++) {
         const ax = src[i * 2], ay = src[i * 2 + 1];
         const bx = src[i * 2 + 2], by = src[i * 2 + 3];
         const dx = bx - ax, dy = by - ay;
         const l = Math.hypot(dx, dy);
         const nx = dy / l, ny = -dx / l; // left normal
-        segs.push([ax + nx * d, ay + ny * d, bx + nx * d, by + ny * d]);
+        segs[i * 4] = ax + nx * d;
+        segs[i * 4 + 1] = ay + ny * d;
+        segs[i * 4 + 2] = bx + nx * d;
+        segs[i * 4 + 3] = by + ny * d;
     }
 
-    const out: Polyline = [segs[0][0], segs[0][1]];
+    const out: Polyline = [segs[0], segs[1]];
     const anchors: Polyline = [src[0], src[1]];
-    for (let i = 1; i < segs.length; i++) {
-        const s0 = segs[i - 1];
-        const s1 = segs[i];
+    for (let i = 1; i < n - 1; i++) {
+        const o0 = (i - 1) * 4, o1 = i * 4;
+        const s0x = segs[o0], s0y = segs[o0 + 1], s0X = segs[o0 + 2], s0Y = segs[o0 + 3];
+        const s1x = segs[o1], s1y = segs[o1 + 1], s1X = segs[o1 + 2], s1Y = segs[o1 + 3];
         const vx = src[i * 2], vy = src[i * 2 + 1];
-        const cross = (s0[2] - s0[0]) * (s1[3] - s1[1]) - (s0[3] - s0[1]) * (s1[2] - s1[0]);
-        const dot = (s0[2] - s0[0]) * (s1[2] - s1[0]) + (s0[3] - s0[1]) * (s1[3] - s1[1]);
+        const cross = (s0X - s0x) * (s1Y - s1y) - (s0Y - s0y) * (s1X - s1x);
+        const dot = (s0X - s0x) * (s1X - s1x) + (s0Y - s0y) * (s1Y - s1y);
         // A left offset (d > 0) is outside a right turn (cross > 0, y-down).
         const outside = (d > 0) === (cross > 0);
         const isNearlyStraight = Math.abs(cross) < 1e-9 * Math.max(1, Math.abs(dot));
         if (isNearlyStraight) {
-            out.push(s1[0], s1[1]);
+            out.push(s1x, s1y);
             anchors.push(vx, vy);
             continue;
         }
         if (!outside) {
-            const ix = intersectLines(s0[0], s0[1], s0[2], s0[3], s1[0], s1[1], s1[2], s1[3]);
+            const ix = intersectLines(s0x, s0y, s0X, s0Y, s1x, s1y, s1X, s1Y);
             if (ix) {
                 out.push(ix[0], ix[1]);
                 anchors.push(vx, vy);
             } else {
-                out.push(s0[2], s0[3], s1[0], s1[1]);
+                out.push(s0X, s0Y, s1x, s1y);
                 anchors.push(vx, vy, vx, vy);
             }
             continue;
         }
-        const a0 = Math.atan2(s0[3] - vy, s0[2] - vx);
-        const a1 = Math.atan2(s1[1] - vy, s1[0] - vx);
+        const a0 = Math.atan2(s0Y - vy, s0X - vx);
+        const a1 = Math.atan2(s1y - vy, s1x - vx);
         let da = a1 - a0;
         while (da > Math.PI) da -= 2 * Math.PI;
         while (da < -Math.PI) da += 2 * Math.PI;
         const steps = Math.max(1, Math.ceil(Math.abs(da) / arcStepRad));
         const r = Math.abs(d);
-        out.push(s0[2], s0[3]);
+        out.push(s0X, s0Y);
         anchors.push(vx, vy);
         for (let k = 1; k < steps; k++) {
             const a = a0 + (da * k) / steps;
             out.push(vx + Math.cos(a) * r, vy + Math.sin(a) * r);
             anchors.push(vx, vy);
         }
-        out.push(s1[0], s1[1]);
+        out.push(s1x, s1y);
         anchors.push(vx, vy);
     }
-    const last = segs[segs.length - 1];
-    out.push(last[2], last[3]);
+    out.push(segs[segs.length - 2], segs[segs.length - 1]);
     anchors.push(src[src.length - 2], src[src.length - 1]);
     const open = removeLoopsAnchored(out, anchors, Math.abs(d) * LOOP_WINDOW_OFFSETS);
     dropEndHook(open, src[2] - src[0], src[3] - src[1], 0, 2 * Math.abs(d));
@@ -548,7 +552,13 @@ function roundCorners(out: Polyline, src: Polyline, corners: number[], radiusPx:
     for (let i = 1; i < n; i++) {
         cum[i] = cum[i - 1] + Math.hypot(src[i * 2] - src[i * 2 - 2], src[i * 2 + 1] - src[i * 2 - 1]);
     }
-    let done = out;
+    // Each fillet replaces a run of `out` that no other fillet reaches (a corner takes at most 0.4
+    // of the run to its neighbor), so the fillets are planned on `out` as it is and spliced in once.
+    const consumed = new Uint8Array(out.length);
+    const arcs = new Map<number, Polyline>();
+    // Where the last fillet ended: on a straight run of one segment the next corner's walk back
+    // starts from that point, as it would have with the fillet already spliced in.
+    let lastFwd: {idx: number; x: number; y: number} | null = null;
     for (let ci = 0; ci < corners.length; ci++) {
         const c = corners[ci];
         const prev = ci > 0 ? corners[ci - 1] : 0;
@@ -557,14 +567,15 @@ function roundCorners(out: Polyline, src: Polyline, corners: number[], radiusPx:
         if (r < 0.05) continue;
         const cx = src[c * 2], cy = src[c * 2 + 1];
         let at = -1;
-        for (let i = 0; i < done.length; i += 2) {
-            if (Math.abs(done[i] - cx) < 1e-6 && Math.abs(done[i + 1] - cy) < 1e-6) {
+        for (let i = 0; i < out.length; i += 2) {
+            if (!consumed[i] && Math.abs(out[i] - cx) < 1e-6 && Math.abs(out[i + 1] - cy) < 1e-6) {
                 at = i;
                 break;
             }
         }
-        if (at <= 0 || at >= done.length - 2) continue;
-        const back = walkAlong(done, at, -2, r), fwd = walkAlong(done, at, 2, r);
+        if (at <= 0 || at >= out.length - 2) continue;
+        const back = walkAlong(out, at, -2, r, lastFwd);
+        const fwd = walkAlong(out, at, 2, r, null);
         r = Math.min(r, back.got, fwd.got);
         if (r < 0.05) continue;
         const steps = Math.max(4, Math.min(12, Math.round(r / 2)));
@@ -573,21 +584,36 @@ function roundCorners(out: Polyline, src: Polyline, corners: number[], radiusPx:
             const t = i / steps, m = 1 - t;
             arc.push(m * m * back.x + 2 * m * t * cx + t * t * fwd.x, m * m * back.y + 2 * m * t * cy + t * t * fwd.y);
         }
-        done = [...done.slice(0, back.idx + 2), ...arc, ...done.slice(fwd.idx)];
+        for (let i = back.idx + 2; i < fwd.idx; i += 2) consumed[i] = 1;
+        arcs.set(back.idx + 2, arc);
+        lastFwd = {idx: fwd.idx, x: fwd.x, y: fwd.y};
+    }
+    if (!arcs.size) return out;
+    const done: Polyline = [];
+    for (let i = 0; i < out.length; i += 2) {
+        const arc = arcs.get(i);
+        if (arc) for (let k = 0; k < arc.length; k++) done.push(arc[k]);
+        if (!consumed[i]) done.push(out[i], out[i + 1]);
     }
     return done;
 }
 
-/** `step` is 2 forward or -2 back; `got` falls short of `dist` only at the line's end. */
-function walkAlong(p: Polyline, at: number, step: number, dist: number): {x: number; y: number; idx: number; got: number} {
+/**
+ * `step` is 2 forward or -2 back; `got` falls short of `dist` only at the line's end. `spliced`
+ * is a fillet's end point that stands in for the vertex before `spliced.idx`, the way it would
+ * once the fillet is in the array: a walk back from that vertex heads for it, not the original.
+ */
+function walkAlong(p: Polyline, at: number, step: number, dist: number, spliced: {idx: number; x: number; y: number} | null): {x: number; y: number; idx: number; got: number} {
     let acc = 0, i = at;
     for (;;) {
         const j = i + step;
         if (j < 0 || j + 1 >= p.length) return {x: p[i], y: p[i + 1], idx: i, got: acc};
-        const seg = Math.hypot(p[j] - p[i], p[j + 1] - p[i + 1]);
+        const stand = spliced !== null && step < 0 && i === spliced.idx;
+        const jx = stand ? spliced.x : p[j], jy = stand ? spliced.y : p[j + 1];
+        const seg = Math.hypot(jx - p[i], jy - p[i + 1]);
         if (acc + seg >= dist) {
             const t = seg > 1e-12 ? (dist - acc) / seg : 0;
-            return {x: p[i] + (p[j] - p[i]) * t, y: p[i + 1] + (p[j + 1] - p[i + 1]) * t, idx: j, got: dist};
+            return {x: p[i] + (jx - p[i]) * t, y: p[i + 1] + (jy - p[i + 1]) * t, idx: j, got: dist};
         }
         acc += seg;
         i = j;

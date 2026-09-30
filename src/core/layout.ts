@@ -874,15 +874,16 @@ function leavesLine(st: ZoomState, m: ConnMember, coords: Polyline): boolean {
     // A lane runs its own offset from the line, so only what is beyond that counts.
     const limit = Math.max(Math.abs(m.lateral), Math.abs(m.lateralOut)) + FOLLOW_ABOVE_LANES * st.spacing;
     for (let i = 0; i < coords.length; i += 2) {
-        let nearest = Infinity;
-        for (let k = 2; k < line.length; k += 2) {
+        // The first segment within the limit settles the vertex; the nearest one is not needed.
+        let within = false;
+        for (let k = 2; k < line.length && !within; k += 2) {
             const x1 = line[k - 2], y1 = line[k - 1];
             const dx = line[k] - x1, dy = line[k + 1] - y1;
             const len = dx * dx + dy * dy;
             const t = len ? Math.max(0, Math.min(1, ((coords[i] - x1) * dx + (coords[i + 1] - y1) * dy) / len)) : 0;
-            nearest = Math.min(nearest, Math.hypot(coords[i] - x1 - t * dx, coords[i + 1] - y1 - t * dy));
+            within = Math.hypot(coords[i] - x1 - t * dx, coords[i + 1] - y1 - t * dy) <= limit;
         }
-        if (nearest > limit) return true;
+        if (!within) return true;
     }
     return false;
 }
