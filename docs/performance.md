@@ -29,14 +29,14 @@ one route and are the only ones the lane ordering has to decide.
 
 | Step | RAMBA | MFO | example |
 |---|---|---|---|
-| Build the line graph | 73 ms | 43 ms | 15 ms |
-| Order the lanes (median of 5 seeds) | 107 ms | 17 ms | 6 ms |
-| Stable-lane baselines | 2 ms | under 1 ms | under 1 ms |
-| Seeded re-order after hiding the busiest route | 85 ms | 12 ms | 4 ms |
+| Build the line graph | 41 ms | 27 ms | 7 ms |
+| Order the lanes (median of 5 seeds) | 86 ms | 14 ms | 5 ms |
+| Stable-lane baselines | 1 ms | under 1 ms | under 1 ms |
+| Seeded re-order after hiding the busiest route | 90 ms | 11 ms | 3 ms |
 
 The ordering runs in a Web Worker by default, so the map stays
 interactive while it runs, and the lanes appear when it finishes. Its
-cost scales with the number of shared edges, at roughly a millisecond per
+cost scales with the number of shared edges, at under a millisecond per
 shared edge on this machine, because single-route edges take no decision
 and the shared edges are solved as independent groups. The default
 budget is 400 annealing moves per shared edge in the first pass. The
@@ -87,27 +87,27 @@ RAMBA:
 
 | Zoom | Full layout | Path vertices | Merged edges | Mesh build | Mesh vertices | Mesh size | Culled layout, phone view |
 |---|---|---|---|---|---|---|---|
-| 12 | 19 ms | 6315 | 199 | 5 ms | 33482 | 1.6 MB | 18 ms, 293 of 492 edges |
-| 14 | 22 ms | 15700 | 71 | 9 ms | 62563 | 3.0 MB | 15 ms, 310 of 492 edges |
-| 16 | 25 ms | 32843 | 9 | 15 ms | 102744 | 5.0 MB | 5 ms, 49 of 492 edges |
-| 18 | 42 ms | 65606 | 1 | 24 ms | 169096 | 8.3 MB | 3 ms, 12 of 492 edges |
+| 12 | 16 ms | 6350 | 197 | 4 ms | 34051 | 1.6 MB | 16 ms, 295 of 492 edges |
+| 14 | 19 ms | 15661 | 71 | 7 ms | 62532 | 3.0 MB | 15 ms, 310 of 492 edges |
+| 16 | 20 ms | 32814 | 9 | 12 ms | 102685 | 5.0 MB | 5 ms, 49 of 492 edges |
+| 18 | 29 ms | 65639 | 1 | 19 ms | 169162 | 8.3 MB | 3 ms, 12 of 492 edges |
 
 MFO:
 
 | Zoom | Full layout | Path vertices | Merged edges | Mesh build | Mesh vertices | Mesh size | Culled layout, phone view |
 |---|---|---|---|---|---|---|---|
-| 12 | 24 ms | 5113 | 7 | 2 ms | 15779 | 0.8 MB | 25 ms, 36 of 43 edges |
-| 14 | 43 ms | 12830 | 1 | 5 ms | 32016 | 1.6 MB | 1 ms, 4 of 43 edges |
-| 16 | 43 ms | 29600 | 1 | 9 ms | 65001 | 3.2 MB | 2 ms, 4 of 43 edges |
-| 18 | 56 ms | 64549 | 0 | 21 ms | 135010 | 6.7 MB | 1 ms, 0 of 43 edges |
+| 12 | 8 ms | 5103 | 7 | 2 ms | 15773 | 0.8 MB | 8 ms, 36 of 43 edges |
+| 14 | 14 ms | 12824 | 1 | 3 ms | 32004 | 1.6 MB | 1 ms, 4 of 43 edges |
+| 16 | 19 ms | 29576 | 1 | 7 ms | 64968 | 3.2 MB | 1 ms, 4 of 43 edges |
+| 18 | 30 ms | 64549 | 0 | 14 ms | 135010 | 6.7 MB | under 1 ms, 0 of 43 edges |
 
 MFO is a small network of dense lines, so at z12 the phone view holds
 almost all of it and the culled build is the full one. The example
-fixture lays out in 1 to 5 ms at every zoom.
+fixture lays out in 2 to 5 ms at every zoom.
 
 The full layout includes opening the fold backs of bundled edges (see
 `docs/algorithms.md`, layout). With `openFolds` off, RAMBA's full layout
-is up to 3 ms faster at each of these zooms. MFO's is up to 1 ms faster,
+is up to 4 ms faster at each of these zooms. MFO's is up to 4 ms faster,
 and 10 ms faster at z18, where its lines are longest in pixels. The culled
 phone view does not change.
 
@@ -129,24 +129,28 @@ unchanged zoom then only pays for the pieces the view has newly reached.
 lawnmower path and rebuilds on the layer's own rule. Layout plus mesh
 build per rebuild, in Node.js on the desktop machine:
 
-| Pan | Rebuilds | Total before | Total now | Median before | Median now |
+| Pan | Rebuilds | Total, no cache | Total, cached | Median, no cache | Median, cached |
 |---|---|---|---|---|---|
-| At z15 | 92 | 639 ms | 133 ms | 6.4 ms | 0.5 ms |
-| At z16 | 360 | 1225 ms | 99 ms | 3.0 ms | 0.1 ms |
-| Zooming from z15 to z16 while panning | 143 | 663 ms | 790 ms | 3.8 ms | 4.6 ms |
+| At z15 | 92 | 571 ms | 120 ms | 5.1 ms | 0.5 ms |
+| At z16 | 360 | 1020 ms | 89 ms | 2.6 ms | 0.1 ms |
+| Zooming from z15 to z16 while panning | 143 | 585 ms | 679 ms | 3.3 ms | 3.8 ms |
 
-"Before" is the code of 2026-09-17, which rebuilt everything on every
-pan. At z15 the worst rebuild of the pan fell from 18 ms to 13 ms, and
-the 90th percentile from 12 ms to 5 ms.
+"No cache" rebuilds everything on every pan, which is what the layer did
+before it kept its per-zoom work (`--no-cache` on the benchmark). At z15
+the cache takes the worst rebuild of the pan from 19 ms to 9 ms, and the
+90th percentile from 11 ms to 4 ms.
 
 The third row moves the zoom as it pans, so almost every rebuild starts
 a new zoom and the cache has nothing to give it. A caller that lays out
 without a cache pays the same way. That is what
 `laneFeatures({extent: 'full'})` and a direct `layoutAtZoom` do. The
-per-zoom work now covers every edge rather than the ones in view, and
-simplifying each centerline in Mercator pays for most of that back.
-Opening fold backs is part of the per-zoom work. It adds about 8 percent
-to this row, and nothing measurable to the first two.
+per-zoom work covers every edge rather than the ones in view: it decides
+which edges merge and where the fronts sit, which needs them all. Its
+cost is the difference between this row and the culled builds of the
+layout table. Opening fold backs is part of the per-zoom work and adds
+nothing measurable to any row. The cached run of this row costs more than
+the uncached one because the caches are filled for a zoom that is never
+asked for again.
 
 ## Off the render thread
 
@@ -172,11 +176,11 @@ which is how its own tiles behave; that mesh stays pixel-exact for lane
 spacing and width at the current zoom, since it is anchored (see
 `docs/algorithms.md`).
 
-Packing an answer costs the worker about a tenth of a rebuild. The same
-pan run through the worker's message handler, which adds packing the
-paths and copying the buffers out, takes 146 ms over the 92 rebuilds at
-z15 instead of 133 ms, and 108 ms over the 360 rebuilds at z16 instead of
-99 ms.
+Packing an answer costs the worker about a quarter of a cached rebuild,
+which is a fraction of a millisecond. The same pan run through the
+worker's message handler, which adds packing the paths and copying the
+buffers out, takes 154 ms over the 92 rebuilds at z15 instead of 120 ms,
+and 111 ms over the 360 rebuilds at z16 instead of 89 ms.
 
 ## The draw
 
@@ -384,13 +388,16 @@ which is what a map with a worker should use.
 
 ## Reproducing
 
-`corepack pnpm test` runs the layout and ordering on the fixtures and
-prints timings with `--silent=false`. The layout and mesh table comes
-from `node scripts/run-ts.mjs scripts/bench-layout.ts`, which lays each
-fixture out five times per zoom and keeps the median. The pan table
-comes from `node scripts/run-ts.mjs scripts/bench-rebuild.ts`, with
-`--no-cache` for the uncached column and `--worker` for what a rebuild
-costs the worker. Run both from the repo root.
+The startup table comes from `node scripts/run-ts.mjs
+scripts/bench-startup.ts`: five runs of each step, the median kept, with
+the ordering itself the median over seeds 1 to 5 and the re-order seeded
+from the solved graph with the route on the most edges hidden. The layout
+and mesh table comes from `node scripts/run-ts.mjs scripts/bench-layout.ts`,
+which lays each fixture out five times per zoom and keeps the median. The
+pan table comes from `node scripts/run-ts.mjs scripts/bench-rebuild.ts`,
+with `--no-cache` for the uncached columns and `--worker` for what a
+rebuild costs the worker; the pan table holds the median of three runs
+of it. Run all three from the repo root.
 
 To check the lane ordering against the best possible order, run
 `scripts/exact-order.py` from the repo root. The library orders lanes with
