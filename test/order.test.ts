@@ -213,3 +213,17 @@ describe('independent components', () => {
         }
     });
 });
+
+describe('against the proven best order', () => {
+    // The best possible costs come from scripts/exact-order.py, which solves the fixtures'
+    // ordering problems exactly. The solver is a local search, so it is held to within a
+    // tenth of them rather than to equality.
+    const proven: [string, number][] = [['example', 7], ['mfo', 47], ['ramba', 45]];
+    for (const [name, best] of proven) {
+        it(`lands within a tenth of the best order on the ${name} fixture`, () => {
+            const fc = JSON.parse(readFileSync(new URL(`./fixtures/${name}.src.geojson`, import.meta.url), 'utf8'));
+            const g = buildLineGraph(fc.features, {routeProperty: 'route_id', colorProperty: 'route_colour'});
+            expect(new LaneOrderer(g).solve()).toBeLessThanOrEqual(best * 1.1);
+        });
+    }
+});

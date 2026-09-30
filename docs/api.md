@@ -185,7 +185,7 @@ stabilize; call `stabilizeLanes` after it if you want stable lanes.
 | `diffSegmentCrossing` | `1` | Two routes on one edge diverging onto different edges in the wrong order. |
 | `separation` | `3` | Adjacent routes that continue together but are no longer adjacent. |
 | `periphery` | `0.5` | A route ending at a node while not on the outside of its bundle. |
-| `annealMoves` | see below | Simulated-annealing moves before the descents. `0` disables annealing. |
+| `annealMoves` | see below | Simulated-annealing moves in the first pass, and in a seeded solve. `0` disables annealing. |
 | `seed` | `42` | Seed for the deterministic PRNG. |
 | `initial` | none | Order to start from, per edge id. See `seedFromSnapshot`. |
 | `stability` | `1` | With `initial`: cost of each pair that ends in the opposite order to the initial one. |
@@ -193,6 +193,11 @@ stabilize; call `stabilizeLanes` after it if you want stable lanes.
 `annealMoves` defaults to 400 per edge that carries more than one route,
 and never less than 10000. The moves are shared between the independent
 components in proportion to their size.
+
+An unseeded solve runs a second pass after the annealing. It removes
+routes that swap sides while running together, and moves a lane only where
+that saves a crossing. `docs/algorithms.md` describes it. It uses no
+annealing moves.
 
 A solve is deterministic: the same graph and options give the same orders
 every time.
@@ -582,8 +587,11 @@ one graph from a single cache.
 | `stats` | Counts and the time the layout took. |
 
 `drawOrder` puts routes whose lanes end under other bundles first, so the
-through-bundles cover their ends. Every path of one route is drawn in one
-pass, so a route never shows seams between its own pieces.
+through-bundles cover their ends. A route that crosses a group of lanes
+turning together is placed above the whole group or below it, never between
+two of its lanes. The order is the same at every zoom. Every path of one
+route is drawn in one pass, so a route never shows seams between its own
+pieces.
 
 An edge in `mergedEdges` has no lane paths. The routes on it cross the
 merged junction on one connector, from the edge before to the edge after.

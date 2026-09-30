@@ -6,6 +6,7 @@
 
 import type {GraphEdge, LaneAppearance, LineGraph, RouteStep} from './graph.js';
 import {openFolds} from './folds.js';
+import {restack} from './stacking.js';
 import {
     boundsIntersect,
     connectorCurve,
@@ -64,7 +65,10 @@ export interface Layout {
     /** Pixels per Mercator unit at this zoom. */
     readonly scale: number;
     readonly paths: LanePath[];
-    /** Route ids in drawing order: routes whose lanes end under other bundles come first. */
+    /**
+     * Route ids in drawing order: routes whose lanes end under other bundles come first, and no
+     * route is drawn between the lanes of a group it crosses (see `stacking.ts`).
+     */
     readonly drawOrder: string[];
     /** Mercator bounds used for culling, if any. */
     readonly bounds: Bounds | null;
@@ -135,6 +139,12 @@ const CORNER_BEND_DEG = 60;
 const CORNER_RADIUS_LANES = 1.5;
 const CORNER_MIN_TURN_DEG = 60;
 const CORNER_MAX_REACH = 1.5;
+/**
+ * A corner or a curve is built between two cut ends, which at low zoom can be eight lanes from
+ * their node. Where the path bends inside that cut, the connector would leave the mapped line; past
+ * this many lanes beyond its own offset, it follows the line instead.
+ */
+const FOLLOW_ABOVE_LANES = 1;
 
 /**
  * Zoom-dependent work and built pieces kept between rebuilds at one zoom. It resets itself when the
@@ -490,7 +500,7 @@ function zoomState(g: LineGraph, zoom: number, style: LaneSizes, smooth: boolean
             }
         }
     }
-    const drawOrder = [...g.routes.keys()].sort((x, y) => (endsUnder.get(y) ?? 0) - (endsUnder.get(x) ?? 0) || (x < y ? -1 : x > y ? 1 : 0));
+    const drawOrder = restack(g, [...g.routes.keys()].sort((x, y) => (endsUnder.get(y) ?? 0) - (endsUnder.get(x) ?? 0) || (x < y ? -1 : x > y ? 1 : 0)));
 
     const st: ZoomState = {
         graph: g, zoom, scale, spacing, width, casing, smooth, openFolds, laneStyle, looks: new Map(),
@@ -808,21 +818,32 @@ function buildGroup(st: ZoomState, grp: ConnGroup): void {
     if (!missing) return;
     const g = st.graph;
     const clique: {member: ConnMember; lateral: number; own: Polyline; coords: Polyline; corner: boolean}[] = [];
+    const ends = new Map<ConnMember, {from: Polyline; to: Polyline; made: {coords: Polyline; corner: boolean} | null}>();
+    // One member leaving the line takes the whole group with it, so its lanes stay parallel.
+    let follows = false;
     for (const m of grp.members) {
         // A refusal is kept as null, so a group is never built twice.
         st.connPaths.set(m.key, null);
-        if (m.plan) {
-            buildTailConnector(st, m, clique);
-            continue;
-        }
+        if (m.plan) continue;
         const laneU = laneOf(st, m.pu.edge, m.route);
         const laneV = laneOf(st, m.pv.edge, m.route);
         const from = m.pu.end === 'b' ? laneU.points : reversed(laneU.points);
         const to = m.pv.end === 'a' ? laneV.points : reversed(laneV.points);
-        if (m.via.length && buildViaConnector(st, m, from, to)) continue;
-        const made = connector(from, to, st.spacing);
-        if (made.coords.length < 4) continue;
-        clique.push({member: m, lateral: m.lateral, own: made.coords, coords: made.coords, corner: made.corner});
+        // Over merged edges the connector follows the line anyway, so there is nothing to measure.
+        const made = m.via.length ? null : connector(from, to, st.spacing);
+        ends.set(m, {from, to, made});
+        if (made && made.coords.length >= 4 && leavesLine(st, m, made.coords)) follows = true;
+    }
+    for (const m of grp.members) {
+        if (m.plan) {
+            buildTailConnector(st, m, clique);
+            continue;
+        }
+        const {from, to, made} = ends.get(m)!;
+        if ((m.via.length || follows) && buildViaConnector(st, m, from, to)) continue;
+        const curve = made ?? connector(from, to, st.spacing);
+        if (curve.coords.length < 4) continue;
+        clique.push({member: m, lateral: m.lateral, own: curve.coords, coords: curve.coords, corner: curve.corner});
     }
     // An offset of a corner is an arc, the sweep corners exist to avoid, so only arcs share one.
     const arcs = clique.filter((c) => !c.corner);
@@ -842,6 +863,28 @@ function buildGroup(st: ZoomState, grp: ConnGroup): void {
             kind: 'connector', travel: m.travel, startDistance: 0, edge: grp.edgeU, node: m.pu.node, between: [grp.edgeU, grp.edgeV],
         });
     }
+}
+
+/** Whether a connector strays from the two cut portions it joins by more than `FOLLOW_ABOVE_LANES`. */
+function leavesLine(st: ZoomState, m: ConnMember, coords: Polyline): boolean {
+    const uPx = preparedPx(st, m.pu.edge);
+    const vPx = preparedPx(st, m.pv.edge);
+    const line = lastPortion(m.pu.end === 'b' ? uPx : reversed(uPx), m.pu.end === 'b' ? st.frontB[m.pu.edge] : st.frontA[m.pu.edge])
+        .concat(firstPortion(m.pv.end === 'a' ? vPx : reversed(vPx), m.pv.end === 'a' ? st.frontA[m.pv.edge] : st.frontB[m.pv.edge]));
+    // A lane runs its own offset from the line, so only what is beyond that counts.
+    const limit = Math.max(Math.abs(m.lateral), Math.abs(m.lateralOut)) + FOLLOW_ABOVE_LANES * st.spacing;
+    for (let i = 0; i < coords.length; i += 2) {
+        let nearest = Infinity;
+        for (let k = 2; k < line.length; k += 2) {
+            const x1 = line[k - 2], y1 = line[k - 1];
+            const dx = line[k] - x1, dy = line[k + 1] - y1;
+            const len = dx * dx + dy * dy;
+            const t = len ? Math.max(0, Math.min(1, ((coords[i] - x1) * dx + (coords[i + 1] - y1) * dy) / len)) : 0;
+            nearest = Math.min(nearest, Math.hypot(coords[i] - x1 - t * dx, coords[i + 1] - y1 - t * dy));
+        }
+        if (nearest > limit) return true;
+    }
+    return false;
 }
 
 /** The Bezier of a tail that does not slide (see `resolveTail`). */

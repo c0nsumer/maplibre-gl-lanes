@@ -44,29 +44,51 @@ The background for the crossing model is Benkert, Nöllenburg, Uno and
 Wolff [3], who introduced the problem, and Fink and Pupyrev [5], who
 settled which crossings are avoidable and proved the hardness results.
 
-The solver is this project's own. It starts with greedy propagation from
-the busiest edge. Then it runs simulated annealing whose move swaps two
-adjacent lines and carries the swap along every edge on which they stay
-adjacent. A per-edge exhaustive descent finishes. Before the annealing, the
-edges that carry more than one line are split into groups that share no
-node. Cost terms only couple edges that meet at a node, and an edge with
-one line has no terms of its own, so each group is an independent problem.
-Each group is solved on its own with a share of the move budget in
-proportion to its size. This has the effect of LOOM's graph simplification,
-which prunes single-line edges and contracts degree-two nodes before
-solving [1, 2], without rewriting the graph. LOOM then uses an integer
-linear program with untangling rules; at the sizes this plugin targets,
-annealing reaches the same costs in a fraction of a second, so the ILP and
-untangling were not ported. Random restarts after the annealing were tried
+The solver is this project's own, and it runs in two passes.
+
+The first pass starts with greedy propagation from the busiest edge. Then
+it runs simulated annealing whose move swaps two adjacent lines and carries
+the swap along every edge on which they stay adjacent. A per-edge
+exhaustive descent finishes. Before the annealing, the edges that carry
+more than one line are split into groups that share no node. Cost terms
+only couple edges that meet at a node, and an edge with one line has no
+terms of its own, so each group is an independent problem. Each group is
+solved on its own with a share of the move budget in proportion to its
+size. This has the effect of LOOM's graph simplification, which prunes
+single-line edges and contracts degree-two nodes before solving [1, 2],
+without rewriting the graph. Random restarts after the annealing were tried
 and never beat it on the test networks, so the whole budget goes to the
 annealing.
+
+The first pass's move has a blind spot. Two lines can swap sides between
+two edges they share, with nothing joining or leaving there. The move
+flips both sides of such a swap together, so it can never remove one, and
+the greedy start creates them where two of its fronts meet. The second
+pass removes them. At each node where a pair swaps sides, it aligns one
+side's run of edges to the other, as far along the run as that lowers the
+cost, best gain first. Then it descends again, with the per-edge descent
+and with one-way swaps, which leave their start edge through one end only.
+Each pair of lines that leaves the first pass's order costs a quarter of a
+crossing in this pass, so a lane moves only where that saves a crossing.
+This matters because the cost model counts events and cannot see how much
+room a junction has: two orders of one cost can draw differently at a
+cramped junction, and the first pass's order is the one that has been
+looked at. The second pass is not from the cited papers. It was worked out
+for this project.
+
+LOOM uses an integer linear program with untangling rules. Neither was
+ported. `scripts/exact-order.py` proves the best possible order of a
+network with an exact solver, and the two passes land within a few percent
+of it on the fixtures: RAMBA 47 against a proven 45, MFO 47 against 47,
+example 7 against 7.
 
 A seeded solve starts from a previous result, so that hiding or showing a
 line keeps the other lanes where they were. It adds a stability term to the
 cost: a fixed amount (default 1, a quarter of a same-edge crossing) for each
-pair of lines that ends in the opposite order to the seed. The annealing
-runs with the full budget on this combined objective, and the result is
-kept only if it beats the seed itself after a descent. Lanes move only where
+pair of lines that ends in the opposite order to the seed. It is one pass:
+annealing with the full budget on this combined objective, with the
+one-way swaps among its moves, then the descents. The result is kept only
+if it beats the seed itself after a descent. Lanes move only where
 the crossings saved are worth it. On the RAMBA fixture, hiding the busiest
 of eleven routes moves the lanes on at most four edges, and showing it again
 moves none.
@@ -133,6 +155,13 @@ chapter 6]:
   offset, which is the sweep a corner exists to avoid, so a lane that turns
   at a corner keeps its own: the corners of a bundle are staggered, each on
   its own line, the way a hand-drawn junction stacks them.
+- A corner or a curve is built between the two cut ends of a lane, which
+  at low zoom can be eight lanes from the node. Where the path bends inside
+  that cut, the curve would leave the mapped line. Where it would leave it
+  by more than one lane beyond the lane's own offset, the whole group of
+  connectors follows the line instead, the way connectors over merged edges
+  do. This rule is not from the cited papers. It was worked out for this
+  project.
 - Junctions closer together than a bundle is wide merge into one junction,
   LOOM's "meta node" [2, chapter 6]. At each zoom, an edge is merged into
   the junctions at its ends when it is shorter than the widest bundle
@@ -212,6 +241,16 @@ in the fragment shader. Three additions:
   depth value at the far plane, which every later MapLibre layer passes
   over. It is not in the stencil buffer, where MapLibre keeps tile clipping
   masks that a custom layer has no way to invalidate.
+
+Each route is drawn in one pass, in one order for the whole map. Routes
+whose lanes end under other bundles are drawn first, so the bundles cover
+their ends. Where a route crosses a group of lanes that turn together, it
+must not be drawn between them, or it passes over one lane of the group
+and under the next. The drawing order is chosen so that every such route
+is above its whole group or below it, by an exact search over the routes
+involved, from the graph and its lane orders rather than from drawn
+geometry, so it is the same at every zoom. This is not from the cited
+papers either. It was worked out for this project.
 
 Dash patterns are computed per fragment from a per-vertex distance along
 the route, with the phase carried through junctions. Dots are geometry

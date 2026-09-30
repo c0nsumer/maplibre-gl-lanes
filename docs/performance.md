@@ -30,23 +30,29 @@ one route and are the only ones the lane ordering has to decide.
 | Step | RAMBA | MFO | example |
 |---|---|---|---|
 | Build the line graph | 73 ms | 43 ms | 15 ms |
-| Order the lanes (median of 5 seeds) | 103 ms | 16 ms | 7 ms |
+| Order the lanes (median of 5 seeds) | 107 ms | 17 ms | 6 ms |
 | Stable-lane baselines | 2 ms | under 1 ms | under 1 ms |
-| Seeded re-order after hiding the busiest route | 109 ms | 24 ms | 11 ms |
+| Seeded re-order after hiding the busiest route | 85 ms | 12 ms | 4 ms |
 
 The ordering runs in a Web Worker by default, so the map stays
 interactive while it runs, and the lanes appear when it finishes. Its
 cost scales with the number of shared edges, at roughly a millisecond per
 shared edge on this machine, because single-route edges take no decision
 and the shared edges are solved as independent groups. The default
-budget is 400 annealing moves per shared edge; `annealMoves` trades
-time for a few fewer crossings (four times the budget lowered RAMBA's
-mean crossing cost from 60 to 53 in 1.9 s).
+budget is 400 annealing moves per shared edge in the first pass. The
+second pass, which removes lanes that swap sides mid-run, adds between a
+few percent and about an eighth to the solve, depending on how many such
+swaps the first pass left.
 
-Earlier measurements in headless Chromium with software rendering ran
-about 2.7x slower than Node.js on the same solve, and Safari's engine
-ran this code several times slower still. Phone numbers for the current
-solver are not yet measured.
+The solve lands close to the best order there is. `scripts/exact-order.py`
+proves that order with an exact solver: RAMBA 45, MFO 47, example 7. The
+solver reaches 47, 47 and 7 with the default seed.
+
+On phones the solve is slower by a constant factor. On the RAMBA network
+of trailmaps.app, which is a little larger than the fixture, a Pixel 8 in
+Chrome ordered the lanes in about 0.45 s and an iPhone 16 in Safari in
+about 0.9 s, in both cases inside the worker and with the page visible.
+On the iPhone the worker round trip cost no more than the solve itself.
 
 ## Layout and mesh per zoom
 
@@ -354,12 +360,6 @@ comes from `node scripts/run-ts.mjs scripts/bench-rebuild.ts`, with
 `--no-cache` for the uncached column and `--worker` for what a rebuild
 costs the worker. Run both from the repo root.
 
-For a device on WebKit, open a Web Inspector console on the page and
-paste `scripts/device-probe.js`, with the page visible on the device. It
-prints the iPhone table above. A backgrounded tab suspends
-`requestAnimationFrame`, and the layer only builds inside the render
-call, so a hidden page reports zero frames and zero builds.
-
 To check the lane ordering against the best possible order, run
 `scripts/exact-order.py` from the repo root. The library orders lanes with
 a local search, which is fast and proves nothing. The script gives the
@@ -375,6 +375,12 @@ lines, and they are at the top of the script. To check another network,
 pass the path of its GeoJSON file. If the map sets `uniformProperties`,
 pass the same names with `--uniform`, because they split edges and so
 change the problem.
+
+For a device on WebKit, open a Web Inspector console on the page and
+paste `scripts/device-probe.js`, with the page visible on the device. It
+prints the iPhone table above. A backgrounded tab suspends
+`requestAnimationFrame`, and the layer only builds inside the render
+call, so a hidden page reports zero frames and zero builds.
 
 For the cost of the draw on a device, frame the view, then paste
 `scripts/draw-probe.js` into the same console. It draws that view with an

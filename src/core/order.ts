@@ -47,6 +47,29 @@ const SAME_NEXT = 0;
 const DIFF_NEXT = 1;
 const PERIPHERY = 2;
 
+/**
+ * Share of a seeded solve's annealing moves that swap one way only (see `swapAlong`). Between
+ * 0.3 and 0.5 the result is the same on the maps measured.
+ */
+const ONE_WAY_SHARE = 0.3;
+/** Chance that a one-way swap stops at each further edge, so it can flip a stretch between two junctions. */
+const ONE_WAY_STOP = 0.15;
+/**
+ * What a pair of lanes leaving its first-pass order costs in the second pass: a quarter of a
+ * crossing. The cost model counts events and cannot see how much room a junction has, so two
+ * orders of one cost can draw differently at a cramped junction. The second pass therefore moves
+ * a lane only where that saves a crossing, and leaves the rest of the first pass alone.
+ */
+const SECOND_PASS_STABILITY = 0.25;
+/**
+ * The same cost while the second pass aligns a run across a pair that swaps sides. It is lower
+ * because that step only acts where such a swap is, so it cannot disturb a junction that has
+ * none; at 0.25 it left two swaps on the densest map measured, which 0.1 and below remove.
+ */
+const ALIGN_STABILITY = 0.1;
+/** How many edges beyond the first an alignment may reach; the last stands for the whole run. */
+const ALIGN_DEPTHS = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24, Infinity];
+
 interface Terms {
     /** First term of each node; node n owns [start[n], start[n + 1]). */
     start: Int32Array;
@@ -368,8 +391,14 @@ export class LaneOrderer {
         return c;
     }
 
-    /** Swap along every connected edge where the pair stays adjacent, so a crossing moves as a whole. */
-    private swapAlong(e: number, i: number, touched: number[], stamp: number): void {
+    /**
+     * Swap along every connected edge where the pair stays adjacent, so a crossing moves as a whole.
+     * That alone cannot remove a pair's crossing between two edges it shares, because both sides of
+     * it flip together. A one-way swap (`end` 0 or 1) leaves the start edge through that end only,
+     * and with `stop` may halt at any further edge, so such a crossing slides along the pair's run
+     * until it leaves it or reaches a junction where it costs less.
+     */
+    private swapAlong(e: number, i: number, touched: number[], stamp: number, end = -1, stop: (() => number) | null = null): void {
         const g = this.g;
         const a = this.lanes[e][i];
         const b = this.lanes[e][i + 1];
@@ -388,9 +417,11 @@ export class LaneOrderer {
             touched.push(cur);
             this.swapPair(cur, a, b);
             const edge = g.edges[cur];
-            for (let end = 0; end < 2; end++) {
-                const nodeId = end === 0 ? edge.a : edge.b;
-                const pi = this.portAt[2 * cur + end];
+            for (let side = 0; side < 2; side++) {
+                if (cur === e && end >= 0 && side !== end) continue;
+                if (cur !== e && stop && stop() < ONE_WAY_STOP) continue;
+                const nodeId = side === 0 ? edge.a : edge.b;
+                const pi = this.portAt[2 * cur + side];
                 if (pi < 0) continue;
                 const nextOf = this.next[nodeId][pi];
                 const na = nextOf[a];
@@ -399,6 +430,183 @@ export class LaneOrderer {
                 for (const p of na) if (nb.includes(p)) stack.push(g.nodes[nodeId].ports[p].edge);
             }
         }
+    }
+
+    /**
+     * Make edge `to` agree with edge `from` across `node`, so that no pair swaps sides between
+     * them, and carry that along `to`'s run for `depth` further edges. The routes keep the places
+     * they hold as a group, so the lanes around them do not move.
+     */
+    private alignRun(from: number, to: number, node: number, depth: number, touched: number[], saved: Int32Array[], stamp: number): void {
+        const g = this.g;
+        const edgeStamp = this.edgeStamp;
+        edgeStamp[from] = stamp;
+        let frontier: [number, number, number][] = [[to, from, node]];
+        for (let d = 0; frontier.length; d++) {
+            const next: [number, number, number][] = [];
+            for (const [h, x, n] of frontier) {
+                const posX = this.pos[x];
+                const posH = this.pos[h];
+                // A loop meets its node at both ends, so which end is meant cannot be told.
+                if (edgeStamp[h] === stamp || !posX || !posH || g.edges[h].a === g.edges[h].b || g.edges[x].a === g.edges[x].b) continue;
+                edgeStamp[h] = stamp;
+                const xOut = g.edges[x].a === n;
+                const hOut = g.edges[h].a === n;
+                const portH = this.portAt[2 * h + (hOut ? 0 : 1)];
+                const nextOf = this.next[n][this.portAt[2 * x + (xOut ? 0 : 1)]];
+                const lx = this.lanes[x];
+                const lh = this.lanes[h];
+                // The routes that pass from x to h here, in x's order looking outward from the node.
+                const group: number[] = [];
+                for (let i = 0; i < lx.length; i++) {
+                    const r = lx[xOut ? i : lx.length - 1 - i];
+                    if (posH[r] >= 0 && nextOf[r]?.includes(portH)) group.push(r);
+                }
+                if (group.length < 2) continue;
+                // Seen outward from both, a group that keeps its sides reads in the opposite order.
+                group.reverse();
+                const slots: number[] = [];
+                for (let i = 0; i < lh.length; i++) {
+                    const at = hOut ? i : lh.length - 1 - i;
+                    if (group.includes(lh[at])) slots.push(at);
+                }
+                if (slots.every((at, i) => lh[at] === group[i])) continue;
+                touched.push(h);
+                saved.push(lh.slice());
+                const aligned = lh.slice();
+                slots.forEach((at, i) => (aligned[at] = group[i]));
+                this.setLanes(h, aligned);
+                if (d >= depth) continue;
+                const far = hOut ? g.edges[h].b : g.edges[h].a;
+                for (const p of g.nodes[far].ports) if (p.edge !== h && edgeStamp[p.edge] !== stamp) next.push([p.edge, h, far]);
+            }
+            frontier = next;
+        }
+    }
+
+    /**
+     * Go to each node where a pair swaps sides between two edges it shares, and align one side's
+     * run to the other wherever that lowers the cost, best first. A search by random swaps finds
+     * the same orders and takes as long again as the first pass.
+     */
+    private alignSwaps(comp: Component, changed: number[]): void {
+        const g = this.g;
+        const t = this.terms;
+        const cache = this.nodeCache;
+        const nodeStamp = this.nodeStamp;
+        for (const n of comp.nodes) cache[n] = this.evalNode(n);
+        const touched: number[] = [];
+        const saved: Int32Array[] = [];
+        const nodes: number[] = [];
+        const costs: number[] = [];
+        const attempt = (from: number, to: number, node: number, depth: number, keep: boolean): number => {
+            const stamp = ++this.stamp;
+            touched.length = 0;
+            saved.length = 0;
+            this.alignRun(from, to, node, depth, touched, saved, stamp);
+            if (!touched.length) return 0;
+            nodes.length = 0;
+            costs.length = 0;
+            for (const e of touched) {
+                for (const n of [g.edges[e].a, g.edges[e].b]) {
+                    if (nodeStamp[n] === stamp) continue;
+                    nodeStamp[n] = stamp;
+                    nodes.push(n);
+                }
+            }
+            let delta = 0;
+            for (const n of nodes) {
+                const c = this.evalNode(n);
+                costs.push(c);
+                delta += c - cache[n];
+            }
+            if (this.stability > 0) {
+                const aligned = touched.map((e) => this.lanes[e].slice());
+                for (const e of touched) delta += this.edgePenalty(e);
+                touched.forEach((e, i) => this.setLanes(e, saved[i]));
+                for (const e of touched) delta -= this.edgePenalty(e);
+                touched.forEach((e, i) => this.setLanes(e, aligned[i]));
+            }
+            if (keep) nodes.forEach((n, i) => (cache[n] = costs[i]));
+            else touched.forEach((e, i) => this.setLanes(e, saved[i]));
+            return delta;
+        };
+        // Every alignment that is kept lowers the cost, so this ends; the bound is a guard.
+        for (let round = 0; round < 400; round++) {
+            let best = -1e-9;
+            let move: [number, number, number, number] | null = null;
+            const tried = new Set<string>();
+            for (const n of comp.nodes) {
+                for (let k = t.start[n]; k < t.start[n + 1]; k++) {
+                    if (t.kind[k] !== SAME_NEXT) continue;
+                    const e = t.edge[k];
+                    const f = t.next[k];
+                    const key = `${n}:${e}:${f}`;
+                    if (tried.has(key)) continue;
+                    const pe = this.pos[e]!;
+                    const pf = this.pos[f]!;
+                    // Looking outward mirrors an edge that arrives, which for a comparison is a sign.
+                    const left = (pe[t.a[k]] < pe[t.b[k]]) === (t.out[k] === 1);
+                    const leftNext = (pf[t.a[k]] < pf[t.b[k]]) === (t.nextOut[k] === 1);
+                    if (left !== leftNext) continue;
+                    tried.add(key);
+                    for (const [from, to] of [[e, f], [f, e]]) {
+                        let reach = -1;
+                        for (const depth of ALIGN_DEPTHS) {
+                            const delta = attempt(from, to, n, depth, false);
+                            // Nothing further to reach, so deeper is the same move.
+                            if (touched.length === reach) break;
+                            reach = touched.length;
+                            if (delta < best) {
+                                best = delta;
+                                move = [from, to, n, depth];
+                            }
+                        }
+                    }
+                }
+            }
+            if (!move) return;
+            attempt(move[0], move[1], move[2], move[3], true);
+            for (const e of touched) changed.push(e);
+        }
+    }
+
+    /** Apply one swap and return what it changes the cost by; `touched` and `nodes` say where. */
+    private swapDelta(e: number, i: number, end: number, stop: (() => number) | null, touched: number[], nodes: number[]): number {
+        const g = this.g;
+        const a = this.lanes[e][i];
+        const b = this.lanes[e][i + 1];
+        const stamp = ++this.stamp;
+        const nodeStamp = this.nodeStamp;
+        touched.length = 0;
+        this.swapAlong(e, i, touched, stamp, end, stop);
+        nodes.length = 0;
+        for (const t of touched) {
+            const edge = g.edges[t];
+            if (nodeStamp[edge.a] !== stamp) {
+                nodeStamp[edge.a] = stamp;
+                nodes.push(edge.a);
+            }
+            if (nodeStamp[edge.b] !== stamp) {
+                nodeStamp[edge.b] = stamp;
+                nodes.push(edge.b);
+            }
+        }
+        let delta = 0;
+        for (const n of nodes) {
+            this.nodeFresh[n] = this.evalNode(n);
+            delta += this.nodeFresh[n] - this.nodeCache[n];
+        }
+        if (this.stability > 0) {
+            // Each swapped edge gains or loses one inversion against its seed.
+            for (const t of touched) {
+                const sp = this.seedPos[t];
+                if (!sp || sp[a] < 0 || sp[b] < 0) continue;
+                const pos = this.pos[t]!;
+                delta += (pos[a] < pos[b]) === (sp[a] < sp[b]) ? -this.stability : this.stability;
+            }
+        }
+        return delta;
     }
 
     private swapPair(e: number, a: number, b: number): void {
@@ -419,8 +627,11 @@ export class LaneOrderer {
     private nodeCache = new Float64Array(0);
     private nodeFresh = new Float64Array(0);
 
-    private anneal(comp: Component, moves: number, rand: () => number): void {
-        const g = this.g;
+    /**
+     * `oneWay` adds the one-way swaps, and keeps the best order the walk passes through rather
+     * than the one it ends on. The first pass of an unseeded solve runs without it.
+     */
+    private anneal(comp: Component, moves: number, rand: () => number, oneWay: boolean): void {
         const candidates = comp.edges;
         if (moves <= 0) return;
         // Measured on the fixtures: a hot start and a warm finish both lower
@@ -430,51 +641,91 @@ export class LaneOrderer {
         const decay = Math.pow(T1 / T0, 1 / moves);
         const cache = this.nodeCache;
         const fresh = this.nodeFresh;
-        const nodeStamp = this.nodeStamp;
         for (const n of comp.nodes) cache[n] = this.evalNode(n);
         const touched: number[] = [];
         const touchedNodes: number[] = [];
+        let running = 0;
+        let lowest = 0;
+        let kept: Int32Array[] | null = null;
         let T = T0;
         for (let m = 0; m < moves; m++, T *= decay) {
             const e = candidates[Math.floor(rand() * candidates.length)];
             const i = Math.floor(rand() * (this.lanes[e].length - 1));
             const a = this.lanes[e][i];
             const b = this.lanes[e][i + 1];
-            const stamp = ++this.stamp;
-            touched.length = 0;
-            this.swapAlong(e, i, touched, stamp);
-            touchedNodes.length = 0;
-            for (const t of touched) {
-                const edge = g.edges[t];
-                if (nodeStamp[edge.a] !== stamp) {
-                    nodeStamp[edge.a] = stamp;
-                    touchedNodes.push(edge.a);
-                }
-                if (nodeStamp[edge.b] !== stamp) {
-                    nodeStamp[edge.b] = stamp;
-                    touchedNodes.push(edge.b);
-                }
-            }
-            let delta = 0;
-            for (const n of touchedNodes) {
-                fresh[n] = this.evalNode(n);
-                delta += fresh[n] - cache[n];
-            }
-            if (this.stability > 0) {
-                // Each swapped edge gains or loses one inversion against its seed.
-                for (const t of touched) {
-                    const sp = this.seedPos[t];
-                    if (!sp || sp[a] < 0 || sp[b] < 0) continue;
-                    const pos = this.pos[t]!;
-                    delta += (pos[a] < pos[b]) === (sp[a] < sp[b]) ? -this.stability : this.stability;
-                }
-            }
+            const end = oneWay && rand() < ONE_WAY_SHARE ? (rand() < 0.5 ? 0 : 1) : -1;
+            const delta = this.swapDelta(e, i, end, end >= 0 ? rand : null, touched, touchedNodes);
             if (delta <= 0 || rand() < Math.exp(-delta / T)) {
                 for (const n of touchedNodes) cache[n] = fresh[n];
+                running += delta;
+                if (oneWay && running < lowest - 1e-9) {
+                    lowest = running;
+                    if (!kept) kept = candidates.map((c) => this.lanes[c].slice());
+                    else for (let c = 0; c < candidates.length; c++) kept[c].set(this.lanes[candidates[c]]);
+                }
             } else {
                 for (const t of touched) this.swapPair(t, a, b);
             }
         }
+        if (kept && lowest < running - 1e-9) candidates.forEach((c, k) => this.setLanes(c, kept![k]));
+    }
+
+    /**
+     * One scan of a hill climb on the annealing's own swaps, over every edge or over those marked
+     * in `only`. The edges it changes are added to `changed`.
+     */
+    private descendSwaps(comp: Component, only: Uint8Array | null, changed: number[]): void {
+        const cache = this.nodeCache;
+        const fresh = this.nodeFresh;
+        for (const n of comp.nodes) cache[n] = this.evalNode(n);
+        const touched: number[] = [];
+        const touchedNodes: number[] = [];
+        for (const e of comp.edges) {
+            if (only && !only[e]) continue;
+            for (let i = 0; i + 1 < this.lanes[e].length; i++) {
+                for (let end = -1; end < 2; end++) {
+                    const a = this.lanes[e][i];
+                    const b = this.lanes[e][i + 1];
+                    const delta = this.swapDelta(e, i, end, null, touched, touchedNodes);
+                    if (delta < -1e-9) {
+                        for (const n of touchedNodes) cache[n] = fresh[n];
+                        for (const t of touched) changed.push(t);
+                    } else {
+                        for (const t of touched) this.swapPair(t, a, b);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Both descents, each over the edges that share a node with one that just changed, until
+     * nothing changes. A change can only open a gain next to itself, so scanning the whole group
+     * again after each one costs several times as much and finds the same order. The first scan
+     * of swaps covers the whole group when `wholeFirst`, since no pass before it tried them.
+     */
+    private polish(comp: Component, from: number[] | null, wholeFirst: boolean): void {
+        let near: Uint8Array | null = from ? this.beside(from) : null;
+        let whole = wholeFirst;
+        // Every change that is kept lowers the cost, so this ends; the bound is a guard.
+        for (let round = 0; round < 200; round++) {
+            const changed: number[] = [];
+            for (const e of comp.edges) if ((!near || near[e]) && this.optimizeEdge(e)) changed.push(e);
+            this.descendSwaps(comp, whole ? null : near, changed);
+            whole = false;
+            if (!changed.length) return;
+            near = this.beside(changed);
+        }
+    }
+
+    /** Marks the edges that share a node with any of `edges`, themselves included. */
+    private beside(edges: number[]): Uint8Array {
+        const g = this.g;
+        const mark = new Uint8Array(g.edges.length);
+        for (const e of edges) {
+            for (const n of [g.edges[e].a, g.edges[e].b]) for (const p of g.nodes[n].ports) mark[p.edge] = 1;
+        }
+        return mark;
     }
 
     /** Multi-route edges in groups that share no node, each an independent problem; sorted for determinism. */
@@ -515,19 +766,37 @@ export class LaneOrderer {
         return comps.sort((x, y) => y.edges.length - x.edges.length || x.edges[0] - y.edges[0]);
     }
 
-    /** Timing of the last solve, ms, for diagnostics. */
+    /** Timing of the last solve, ms, both passes together, for diagnostics. */
     timings = {greedy: 0, anneal: 0, descend: 0};
 
-    /** Assign orders on all edges. Returns the final cost. */
+    /**
+     * Assign orders on all edges. Returns the final cost.
+     *
+     * An unseeded solve runs two passes. The first is greedy propagation and annealing with whole
+     * swaps. The second starts from the first's order and does no annealing: it aligns the runs
+     * across every pair the first left swapping sides, then descends, and charges each pair that
+     * leaves the first pass's order. A seeded solve is one pass from the caller's seed, annealed
+     * with the one-way swaps as well, at the caller's `stability`.
+     */
     solve(): number {
+        this.timings = {greedy: 0, anneal: 0, descend: 0};
+        const seed = this.opts.initial;
+        if (seed && seed.size > 0) return this.pass(seed, this.opts.stability ?? 1, 'seeded');
+        this.pass(null, 0, 'first');
+        const first = new Map<number, string[]>();
+        for (const e of this.g.edges) if (e.routes.length > 1) first.set(e.id, e.order.slice());
+        return this.pass(first, SECOND_PASS_STABILITY, 'second');
+    }
+
+    private pass(initial: Map<number, string[]> | null, stability: number, kind: 'first' | 'second' | 'seeded'): number {
         const tStart = performance.now();
         const g = this.g;
         const rand = mulberry32(this.opts.seed ?? 42);
-        const seeded = !!this.opts.initial && this.opts.initial.size > 0;
+        const seeded = !!initial;
         this.seedPos = g.edges.map(() => null);
-        this.stability = seeded ? (this.opts.stability ?? 1) : 0;
+        this.stability = seeded ? stability : 0;
         for (const e of g.edges) {
-            const init = this.opts.initial?.get(e.id)?.filter((r) => e.routes.includes(r));
+            const init = initial?.get(e.id)?.filter((r) => e.routes.includes(r));
             if (!init || !init.length) {
                 e.order = e.routes.slice().sort();
                 continue;
@@ -561,7 +830,8 @@ export class LaneOrderer {
                 for (const n of [e.a, e.b]) for (const p of g.nodes[n].ports) if (!seen.has(p.edge)) frontier.push(p.edge);
             }
         }
-        const timings = {greedy: performance.now() - tStart, anneal: 0, descend: 0};
+        const timings = this.timings;
+        timings.greedy += performance.now() - tStart;
         const comps = this.components();
         const candidates = comps.reduce((s, c) => s + c.edges.length, 0);
         const totalMoves = this.opts.annealMoves ?? Math.max(10000, 400 * candidates);
@@ -572,15 +842,25 @@ export class LaneOrderer {
             let bestCost = Infinity;
             let best: Int32Array[] = [];
             if (seeded) {
-                bestCost = this.descend(comp);
+                // The first pass ended on a descent, so its order has none left to make.
+                bestCost = kind === 'second' ? this.componentCost(comp) : this.descend(comp);
                 best = comp.edges.map((e) => this.lanes[e].slice());
             }
             timings.descend += performance.now() - t;
             t = performance.now();
-            if (bestCost > 0) this.anneal(comp, Math.ceil((totalMoves * comp.edges.length) / candidates), rand);
+            const aligned: number[] = [];
+            if (kind === 'second') {
+                this.stability = ALIGN_STABILITY;
+                this.alignSwaps(comp, aligned);
+                this.stability = stability;
+            } else if (bestCost > 0) {
+                this.anneal(comp, Math.ceil((totalMoves * comp.edges.length) / candidates), rand, kind === 'seeded');
+            }
             timings.anneal += performance.now() - t;
             t = performance.now();
-            const c = this.descend(comp);
+            if (kind === 'second') this.polish(comp, aligned, true);
+            else if (kind === 'seeded') this.polish(comp, null, true);
+            const c = kind === 'second' ? this.componentCost(comp) : this.descend(comp);
             if (c < bestCost - 1e-9) {
                 bestCost = c;
                 best = comp.edges.map((e) => this.lanes[e].slice());
@@ -590,7 +870,6 @@ export class LaneOrderer {
             timings.descend += performance.now() - t;
         }
         this.store();
-        this.timings = timings;
         return this.evalAll();
     }
 }

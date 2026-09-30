@@ -3,6 +3,28 @@
 All notable changes to maplibre-gl-lanes are recorded here. The format
 follows Keep a Changelog, and the project uses semantic versioning.
 
+## Unreleased
+
+### Changed
+
+- Lane ordering runs a second pass that removes routes swapping sides
+  while running together. The first pass could not remove them, and on a
+  dense network it left a dozen. Lane orders change on existing maps
+  where that happened. A stored snapshot keeps its old order until the map
+  is solved again. The solve takes a few percent longer.
+- A connector follows the mapped path where a corner or curve would leave
+  it by more than one lane, which happened at low zoom where a path bends
+  inside the cut-back of a bundle.
+- The drawing order no longer weaves a route through a group of lanes it
+  crosses. Maps without such a crossing keep their order.
+
+### Added
+
+- `scripts/exact-order.py` proves the best possible lane order of a
+  network with an exact solver, for checking the solver. It is a
+  development tool that needs Python and OR-Tools; the library does not
+  depend on it.
+
 ## 1.0.0 - 2026-09-27
 
 The first release. Nothing was published before it, so there is no
