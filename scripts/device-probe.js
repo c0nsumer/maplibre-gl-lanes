@@ -38,11 +38,15 @@
 
     // Sampled per frame rather than through setOnBuild: the layer holds one
     // listener, and the app owns it.
-    let frames = [], builds = [], last = performance.now(), run = true;
+    let frames = [], builds = [], slow = [], last = performance.now(), run = true, phase = 'warm-up', t00 = last;
     let lastBuild = L.getBuildInfo() ? L.getBuildInfo().build : -1;
     (function tick() {
         if (!run) return;
-        const t = performance.now(); frames.push(t - last); last = t;
+        const t = performance.now(); frames.push(t - last);
+        // A long frame is placed by motion and by time, so a recording taken
+        // during the run can be read at the same spot.
+        if (t - last > 32) slow.push({phase, atMs: Math.round(t - t00), ms: +(t - last).toFixed(1)});
+        last = t;
         const bi = L.getBuildInfo();
         if (bi && bi.build !== lastBuild) {
             lastBuild = bi.build;
@@ -52,12 +56,12 @@
     })();
 
     const start = map.getCenter(), z0 = map.getZoom();
-    await sleep(500); frames = []; builds = [];          // discard warm-up
-    map.panBy([innerWidth * 0.8, 0], {duration: 1200}); await sleep(1600);
-    map.panBy([0, innerHeight * 0.6], {duration: 1200}); await sleep(1600);
-    map.easeTo({zoom: z0 + 2, duration: 1500}); await sleep(1900);
-    map.easeTo({zoom: z0 - 1, duration: 1500}); await sleep(1900);
-    map.easeTo({center: start, zoom: z0, duration: 1200}); await sleep(1600);
+    await sleep(500); frames = []; builds = []; slow = []; t00 = performance.now();   // discard warm-up
+    phase = 'pan right'; map.panBy([innerWidth * 0.8, 0], {duration: 1200}); await sleep(1600);
+    phase = 'pan down'; map.panBy([0, innerHeight * 0.6], {duration: 1200}); await sleep(1600);
+    phase = 'zoom in 2'; map.easeTo({zoom: z0 + 2, duration: 1500}); await sleep(1900);
+    phase = 'zoom out 3'; map.easeTo({zoom: z0 - 1, duration: 1500}); await sleep(1900);
+    phase = 'return'; map.easeTo({center: start, zoom: z0, duration: 1200}); await sleep(1600);
     run = false;
 
     const s = frames.slice(1).sort((a, b) => a - b);
@@ -66,6 +70,7 @@
         n: s.length, medianMs: pct(0.5), p95Ms: pct(0.95),
         worstMs: +(s[s.length - 1] || 0).toFixed(1),
         over32ms: s.filter((x) => x > 32).length, over100ms: s.filter((x) => x > 100).length,
+        slow,
     };
     const sum = (k) => builds.reduce((a, b) => a + b[k], 0);
     res.builds = {

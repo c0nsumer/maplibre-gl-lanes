@@ -48,11 +48,31 @@ The solve lands close to the best order there is. `scripts/exact-order.py`
 proves that order with an exact solver: RAMBA 45, MFO 47, example 7. The
 solver reaches 47, 47 and 7 with the default seed.
 
-On phones the solve is slower by a constant factor. On the RAMBA network
-of trailmaps.app, which is a little larger than the fixture, a Pixel 8 in
-Chrome ordered the lanes in about 0.45 s and an iPhone 16 in Safari in
-about 0.9 s, in both cases inside the worker and with the page visible.
-On the iPhone the worker round trip cost no more than the solve itself.
+On phones the solve is slower by a constant factor, and the worker adds a
+little on top. `scripts/order-probe.js` splits the two. It times the
+graph build, a full solve in the layer's warm worker, the same solve on
+the main thread, a solve seeded from a previous result with the busiest
+route hidden (what a route toggle asks for), a worker solve while the
+main thread spins for one second, and the first round trip of a freshly
+made worker. The figures below are from the deployed RAMBA map of
+trailmaps.app, which is larger than the fixture (597 edges, 147 shared),
+on an iPhone 16 in Safari 27 and a Pixel 8 in Chrome 154, with the page
+visible and the map at rest. Each is the median of the probe's runs.
+
+| What | iPhone 16 | Pixel 8 |
+|---|---|---|
+| Build the line graph, main thread | 23 ms | 49 ms |
+| Full solve in the worker, call to answer | 203 ms | 116 ms |
+| The same solve on the main thread | 158 ms | 134 ms |
+| Seeded re-solve with the busiest route hidden | 171 ms | 97 ms |
+| Worker solve while the main thread spins for 1000 ms | 1004 ms | 1000 ms |
+| A fresh worker's first round trip, the layer's own script | 16 ms | 34 ms |
+
+The solver itself runs at much the same speed in both engines. What the
+worker adds on the iPhone is about 45 ms of round trip on a 158 ms solve,
+and spawning one costs 16 ms. A solve keeps running while the main thread
+is busy: the spinning main thread neither stalled it nor added to it. So
+a re-order after a route toggle is done in about 0.2 s on either phone.
 
 ## Layout and mesh per zoom
 
@@ -199,8 +219,8 @@ tenths of a millisecond. The z13 view is the expensive one because the
 whole network is on screen at once.
 
 Ordering and layout run in two workers from one script. A re-order after
-a route is toggled takes about a second on a phone, and a pan must not
-queue behind it.
+a route is toggled takes about 0.2 s on a phone, and a pan must not queue
+behind it.
 
 ## Measured on a phone
 
@@ -284,11 +304,12 @@ came to 135 ms over 62 s of interaction.
 
 ## Measured on an iPhone
 
-An iPhone on iOS 18.7 in Safari, on the deployed RAMBA and Glacial Hills
-maps, taken 2026-09-19 with the plugin at 34a0aa3. The device reports
-four cores, a device pixel ratio of 3, and a 393 by 695 CSS viewport.
-WebGL2 is there and the renderer is "Apple GPU". These are the first
-numbers from a WebKit engine; everything above is V8.
+An iPhone 16 in Safari 27, on the deployed RAMBA and Glacial Hills maps
+of trailmaps.app. The RAMBA column was taken 2026-09-29 with the plugin at
+1.0.0; the Glacial Hills column 2026-09-19 at 34a0aa3, on the same device.
+The device reports four cores, a device pixel ratio of 3, and a 393 by 695
+CSS viewport. WebGL2 is there and the renderer is "Apple GPU". These are
+the numbers from a WebKit engine; everything above is V8.
 
 They come from a script rather than a trace. It drives the map through a
 fixed sequence of two pans and three zoom changes over about nine
@@ -298,41 +319,52 @@ figure here is a total over many events rather than a single reading.
 
 | What | RAMBA | Glacial Hills |
 |---|---|---|
-| Edges in the full graph | 492 | 172 |
-| Vertices in the built extent | 4054 | 4640 |
-| Builds in the run | 9 | 8 |
-| Build work on the render thread | 1 ms in total | 2 ms in total |
-| Layout, in the worker | 245 ms in total, longest 77 ms | 183 ms in total, longest 36 ms |
-| Mesh, in the worker | 72 ms in total, longest 24 ms | 47 ms in total, longest 13 ms |
-| Frames | 488 | 512 |
-| Frame interval | median 17 ms, p95 17 ms | median 17 ms, p95 17 ms |
-| Frames over 32 ms | 9 | 3 |
-| Frames over 100 ms | 3 | none |
-| Longest frame | 128 ms | 60 ms |
-| Hit test (`queryLane`) | 200 calls, 82 ms, 0.41 ms each | 200 calls, 86 ms, 0.43 ms each |
+| Edges in the full graph | 597 | 172 |
+| Vertices in the built extent | 4579 | 4640 |
+| Builds in the run | 8 | 8 |
+| Build work on the render thread | 2 ms in total | 2 ms in total |
+| Layout, in the worker | 246 ms in total, longest 82 ms | 183 ms in total, longest 36 ms |
+| Mesh, in the worker | 84 ms in total, longest 31 ms | 47 ms in total, longest 13 ms |
+| Frames | 485 | 512 |
+| Frame interval | median 17 ms, p95 19 ms | median 17 ms, p95 17 ms |
+| Frames over 32 ms | 8 | 3 |
+| Frames over 100 ms | 1 | none |
+| Longest frame | 117 ms | 60 ms |
+| Hit test (`queryLane`) | 200 calls, 99 ms, 0.5 ms each | 200 calls, 86 ms, 0.43 ms each |
 
 The bar holds on iOS as it does on Android. The work on the render thread
-is the buffer upload and the mesh swap, and it came to about a tenth of a
-millisecond a build on both maps. The layout and the mesh run in the
+is the buffer upload and the mesh swap, and it came to about a quarter of
+a millisecond a build on both maps. The layout and the mesh run in the
 worker and never touch a frame.
 
 Both maps held the refresh interval for 95 percent of their frames. The
-median and the p95 are the same 17 ms, so the distribution is tight and
+median is the refresh interval on both, so the distribution is tight and
 only the tail moves.
 
-That tail belongs to RAMBA rather than to iOS. RAMBA dropped three frames
-past 100 ms and Glacial Hills dropped none, while the two had a similar
-number of vertices in view. What differs is the size of the whole graph,
-492 edges against 172, and that is what a cold layout after a zoom change
-costs: 77 ms against 36 ms. The plugin's own render-thread work over each
-run was 1 ms and 2 ms, so it cannot account for a frame of 128 ms. What
-does account for it is not established. That needs a Safari timeline
-recording rather than a counter.
+The tail is not the plugin's. The same run on a Pixel 8 in Chrome 154
+gave the same shape: median 16.7 ms, p95 21 ms, one frame of 138 ms. On
+both phones the plugin's render-thread work over the whole run was 2 ms,
+so it cannot account for a frame of 117 ms. The frame over 100 ms is
+also a one-off: four more runs on the iPhone, taken under a Safari
+timeline recording, had a longest frame of 60, 72, 32 and 38 ms, and four
+more on the Pixel, each under a Chrome trace, 34, 38, 22 and 22 ms.
 
-Against the Pixel 8 above, on the same RAMBA map: the cold layout was 77
-ms here and 59.7 ms there, the mesh 24 ms and 17 ms, and the cost per
-build on the render thread about 0.11 ms and 0.2 ms. iOS is a little
-slower where the work is and a little cheaper on the thread that matters.
+What the recordings show about the longer frames that remain: on the
+iPhone the run's worst were four frames in a row of 41 to 56 ms as the
+zoom-in settled, each holding one promise callback of 24 to 42 ms and a
+composite of about the same length, right after a worker's message. That
+is a worker's answer being applied when a zoom ends, and the plugin's
+builds in that run were 17 ms at the longest, in its worker. Over the
+run, WebKit's sampler attributed 347 ms of main-thread time to MapLibre,
+66 ms to the plugin and 17 ms to the contour layer. The Pixel's CPU
+profile over its 9.4 s run reads the same way: 2.1 s in MapLibre, 83 ms
+in the plugin, 79 ms in the map application, with the longest
+main-thread task during the motion at 34 ms.
+
+Against the Pixel 8 on the same RAMBA map: the cold layout was 82 ms
+here and 53 to 81 ms there, the mesh 31 ms and 22 to 28 ms, and the cost
+per build on the render thread about 0.25 ms on both. iOS is a little
+slower where the work is and the same on the thread that matters.
 
 Two things this does not cover. The script drives the map with `easeTo`,
 which is not a pinch. And a `queryLane` timing says nothing about whether
@@ -376,11 +408,39 @@ pass the path of its GeoJSON file. If the map sets `uniformProperties`,
 pass the same names with `--uniform`, because they split edges and so
 change the problem.
 
-For a device on WebKit, open a Web Inspector console on the page and
-paste `scripts/device-probe.js`, with the page visible on the device. It
-prints the iPhone table above. A backgrounded tab suspends
+For a phone, open a console attached to the page (Safari's Web Inspector
+for an iPhone, `chrome://inspect` for an Android phone) and paste
+`scripts/device-probe.js`, with the page visible on the device. It prints
+the iPhone table above, and lists every frame over 32 ms with the motion
+it fell in and its time since the run started, so a recording taken
+during the run can be read at that spot. A backgrounded tab suspends
 `requestAnimationFrame`, and the layer only builds inside the render
 call, so a hidden page reports zero frames and zero builds.
+
+For where a lane ordering's time goes, paste `scripts/order-probe.js`
+into the same console with the map at rest. It prints the ordering table
+under "Startup", on private copies of the page's graph, so the page's
+own layer is not disturbed.
+
+To record a Safari timeline of the probe's run, enable only JavaScript
+& Events, CPU, Layout & Rendering and Network, start recording, open the
+split console with Esc and paste the probe there. The Screenshots
+instrument must stay off: on the device it captures a frame every 90 ms
+and holds the page to about 11 frames a second for the whole recording,
+so every frame reads as 80 to 95 ms whatever the page does. With it off
+the recording does not move the probe's figures.
+
+To record a Chrome trace of the probe's run on an Android phone, with
+`adb` on the tethered machine:
+
+    adb forward tcp:9222 localabstract:chrome_devtools_remote
+    node scripts/pixel-trace.mjs ramba scripts/device-probe.js out/pixel
+
+It pastes the probe, stops when the probe prints, and writes the trace
+beside the probe's output. The trace is what the Performance panel's
+"Save profile" would have given, which a DevTools window attached
+through `chrome://inspect` does not always manage. Recording this way
+did not move the probe's figures either.
 
 For the cost of the draw on a device, frame the view, then paste
 `scripts/draw-probe.js` into the same console. It draws that view with an
