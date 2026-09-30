@@ -17,6 +17,11 @@ follows Keep a Changelog, and the project uses semantic versioning.
   inside the cut-back of a bundle.
 - The drawing order no longer weaves a route through a group of lanes it
   crosses. Maps without such a crossing keep their order.
+- Faster, with the same output: a cold layout of a zoom takes about a
+  quarter less, its mesh a fifth less, a lane ordering a fifth less and the
+  graph build a seventh less than in 1.0.0, measured in Node on the RAMBA
+  network of trailmaps.app. Every lane, connector and mesh is unchanged
+  to the last bit; `scripts/layout-dump.ts` is the check.
 
 ### Added
 
