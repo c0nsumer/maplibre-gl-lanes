@@ -11,17 +11,20 @@ follows Keep a Changelog, and the project uses semantic versioning.
   while running together. The first pass could not remove them, and on a
   dense network it left a dozen. Lane orders change on existing maps
   where that happened. A stored snapshot keeps its old order until the map
-  is solved again. The solve takes a few percent longer.
+  is solved again. The second pass adds between a few percent and an
+  eighth to a solve, and the speedups below more than make up for it.
 - A connector follows the mapped path where a corner or curve would leave
   it by more than one lane, which happened at low zoom where a path bends
   inside the cut-back of a bundle.
 - The drawing order no longer weaves a route through a group of lanes it
   crosses. Maps without such a crossing keep their order.
-- Faster, with the same output: a cold layout of a zoom takes about a
-  quarter less, its mesh a fifth less, a lane ordering a fifth less and the
-  graph build a seventh less than in 1.0.0, measured in Node on the RAMBA
-  network of trailmaps.app. Every lane, connector and mesh is unchanged
-  to the last bit; `scripts/layout-dump.ts` is the check.
+- Faster: a cold layout of a zoom takes about a quarter less, its mesh a
+  fifth less, a lane ordering a fifth less and the graph build a seventh
+  less than without the speedups, measured in Node on the RAMBA network of
+  trailmaps.app. With the second ordering pass included, a lane ordering
+  of the RAMBA fixture still takes about a sixth less than in 1.0.0. The
+  speedups change no output: every lane, connector and mesh is the same to
+  the last bit as without them. `scripts/layout-dump.ts` is the check.
 
 ### Added
 
@@ -29,6 +32,18 @@ follows Keep a Changelog, and the project uses semantic versioning.
   network with an exact solver, for checking the solver. It is a
   development tool that needs Python and OR-Tools; the library does not
   depend on it.
+- Measurement scripts, described in `docs/performance.md`:
+  `scripts/bench-startup.ts` times the graph build and the lane ordering
+  in Node, `scripts/order-probe.js` times the lane ordering on a device,
+  and `scripts/pixel-trace.mjs` records a performance trace from an
+  Android phone. `scripts/device-probe.js` now tags every frame over
+  32 ms with the motion it fell in.
+
+### Fixed
+
+- The demo's native line-offset baseline draws dashed and dotted routes
+  as dashed and dotted lines, so the comparison with the lanes is only
+  about the lanes. Its stats fit the panel.
 
 ## 1.0.0 - 2026-09-27
 

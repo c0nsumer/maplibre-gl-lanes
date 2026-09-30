@@ -43,7 +43,7 @@ shared ways. GPX tracks and GTFS shapes do not.
 | `colorProperty` | `'color'` | Feature property holding the route color. `routes` overrides it. |
 | `nameProperty` | `'name'` | Feature property holding the route name. |
 | `routes` | none | Route metadata by id (`Record<string, Partial<RouteMeta>>`). It overrides the per-feature properties. |
-| `snapDegrees` | `1e-7` | Coordinate rounding used to match shared vertices. |
+| `snapDegrees` | `1e-7` | Coordinate rounding used to match shared vertices, in degrees. |
 | `uniformProperties` | none | Feature properties that must stay the same along an edge, by name. |
 
 `uniformProperties` is how facts about the path itself, rather than the
@@ -402,7 +402,7 @@ transparent line layer.
 | Property | What it is |
 |---|---|
 | `route` | The route id. |
-| `name` | The route name. |
+| `name` | The route name, or the route id when the route has no name. |
 | `color` | The lane color. |
 | `direction` | `1` when the coordinates run in the direction of travel, `0` where the route's features cross the edge in both directions. |
 | `kind` | `'lane'` or `'connector'`. |

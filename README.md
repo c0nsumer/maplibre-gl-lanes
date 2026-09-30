@@ -234,3 +234,5 @@ used.
 
 MIT. Test fixtures are OpenStreetMap data under the ODbL; see
 `test/fixtures/README.md`.
+The demo's basemap, `demo/public/ramba-basemap.pmtiles`, is also
+OpenStreetMap data under the ODbL.

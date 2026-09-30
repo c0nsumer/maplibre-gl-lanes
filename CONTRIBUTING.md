@@ -30,7 +30,7 @@ fixtures in `test/fixtures/`.
   `grey` color name.
 - Comments in this codebase carry design rationale, not narration. Keep that
   standard: explain why, not what.
-- No em dashes. Use a colon, a comma, a period, or a hyphen for ranges.
+- No em dashes or en dashes. Use a colon, a comma, a period, or a hyphen for ranges.
 - There is no formatter. Match the surrounding code: 4-space indent, single
   quotes, about 100 columns. Do not reflow lines you are not changing.
 - Do not copy or port code from LOOM. It is GPL-3 and this project is MIT.

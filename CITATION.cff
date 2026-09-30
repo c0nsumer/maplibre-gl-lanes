@@ -24,7 +24,7 @@ references:
       name: "University of Freiburg, Chair of Algorithms and Data Structures"
     repository-code: "https://github.com/ad-freiburg/loom"
     license: GPL-3.0
-    notes: "The design of LOOM's topology, ordering, and rendering stages informed this plugin; its parallel-offset connectors for routes that turn together were adopted from the renderer's design. No LOOM code was used; everything here is reimplemented from the papers and thesis."
+    notes: "The design of LOOM's topology, ordering, and rendering stages informed this plugin; its parallel-offset connectors for routes that turn together and its merged junctions were adopted from the renderer's design. No LOOM code was used; everything here is reimplemented from the papers and thesis."
   - type: software
     title: "QGIS LOOM Transit Map Generator"
     authors:
@@ -55,6 +55,36 @@ references:
       name: "University of Freiburg"
     year: 2022
     url: "https://ad-publications.cs.uni-freiburg.de/theses/PhD_Thesis_Patrick_Brosi.pdf"
+  - type: conference-paper
+    title: "Minimizing Intra-Edge Crossings in Wiring Diagrams and Public Transportation Maps"
+    authors:
+      - family-names: Benkert
+        given-names: Marc
+      - family-names: Nöllenburg
+        given-names: Martin
+      - family-names: Uno
+        given-names: Takeaki
+      - family-names: Wolff
+        given-names: Alexander
+    conference:
+      name: "Graph Drawing 2006"
+    year: 2006
+    doi: 10.1007/978-3-540-70904-6_27
+  - type: conference-paper
+    title: "Line Crossing Minimization on Metro Maps"
+    authors:
+      - family-names: Bekos
+        given-names: Michael A.
+      - family-names: Kaufmann
+        given-names: Michael
+      - family-names: Potika
+        given-names: Katerina
+      - family-names: Symvonis
+        given-names: Antonios
+    conference:
+      name: "Graph Drawing 2007"
+    year: 2007
+    doi: 10.1007/978-3-540-77537-9_24
   - type: conference-paper
     title: "Metro-Line Crossing Minimization: Hardness, Approximations, and Tractable Cases"
     authors:

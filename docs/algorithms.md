@@ -66,10 +66,13 @@ flips both sides of such a swap together, so it can never remove one, and
 the greedy start creates them where two of its fronts meet. The second
 pass removes them. At each node where a pair swaps sides, it aligns one
 side's run of edges to the other, as far along the run as that lowers the
-cost, best gain first. Then it descends again, with the per-edge descent
-and with one-way swaps, which leave their start edge through one end only.
-Each pair of lines that leaves the first pass's order costs a quarter of a
-crossing in this pass, so a lane moves only where that saves a crossing.
+cost, best gain first. Then it descends again, with the per-edge descent,
+with the first pass's swaps and with one-way swaps. A one-way swap leaves
+its start edge through one end only. Each pair of lines that leaves the
+first pass's order costs 0.25 in this pass, a quarter of a diverging
+crossing, so a lane moves only where that saves a crossing. The alignment
+step charges 0.1 instead. It acts only where a pair swaps sides, so it
+cannot disturb a junction that has no such swap.
 This matters because the cost model counts events and cannot see how much
 room a junction has: two orders of one cost can draw differently at a
 cramped junction, and the first pass's order is the one that has been
@@ -89,9 +92,9 @@ pair of lines that ends in the opposite order to the seed. It is one pass:
 annealing with the full budget on this combined objective, with the
 one-way swaps among its moves, then the descents. The result is kept only
 if it beats the seed itself after a descent. Lanes move only where
-the crossings saved are worth it. On the RAMBA fixture, hiding the busiest
-of eleven routes moves the lanes on at most four edges, and showing it again
-moves none.
+the crossings saved are worth it. On the RAMBA fixture without its four
+winter routes, hiding the busiest of the other ten moves no lane, and
+showing it again moves none.
 
 ### 3. Stable lanes
 
@@ -215,11 +218,14 @@ viewport: the merge decisions, the junctions, the node fronts and each
 edge's centerline in pixels. The layer keeps them, and each lane and
 connector it has built, from one rebuild to the next, so panning at one
 zoom only lays out the pieces the view has newly reached. The viewport
-decides what is emitted, never the shape of a piece.
+decides what is emitted, never the shape of a piece. The simplification of
+a centerline (Douglas-Peucker) makes the same splits at every zoom. Each
+edge therefore ranks its vertices once, by the tolerance at which each one
+survives, and every zoom filters that ranking instead of simplifying again.
 
 ### 5. Rendering
 
-The renderer is this project's own, modelled on MapLibre GL JS's line
+The renderer is this project's own, modeled on MapLibre GL JS's line
 layer [6]: triangle strips whose width is applied in the vertex shader from
 a per-vertex extrude vector, with anti-aliasing computed from a unit normal
 in the fragment shader. Three additions:
@@ -249,8 +255,10 @@ must not be drawn between them, or it passes over one lane of the group
 and under the next. The drawing order is chosen so that every such route
 is above its whole group or below it, by an exact search over the routes
 involved, from the graph and its lane orders rather than from drawn
-geometry, so it is the same at every zoom. This is not from the cited
-papers either. It was worked out for this project.
+geometry, so it is the same at every zoom. The search doubles with every
+route involved. If more than 16 routes are involved, the search is
+skipped, and they keep the order by lane ends alone. This is not from the
+cited papers either. It was worked out for this project.
 
 Dash patterns are computed per fragment from a per-vertex distance along
 the route, with the phase carried through junctions. Dots are geometry

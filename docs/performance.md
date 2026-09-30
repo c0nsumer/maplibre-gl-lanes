@@ -9,9 +9,11 @@ phone.
 The desktop figures were taken in Node.js 22 on a Linux machine, against
 the fixtures in `test/fixtures`. They use the demo's lane widths: a 2 px
 fill at z10, growing to 7 px at z18, with spacing one pixel wider. Device
-figures name their hardware where they appear. Every figure comes from the
-code as it stands. "Reproducing", at the end, says how to take them again
-on your own data and your own device.
+figures name their hardware where they appear. Every desktop figure comes
+from the code as it stands. The device figures were taken on earlier
+builds, and a section that names its build measured that one.
+"Reproducing", at the end, says how to take them again on your own data
+and your own device.
 
 ## The fixtures
 
@@ -39,10 +41,10 @@ interactive while it runs, and the lanes appear when it finishes. Its
 cost scales with the number of shared edges, at under a millisecond per
 shared edge on this machine, because single-route edges take no decision
 and the shared edges are solved as independent groups. The default
-budget is 400 annealing moves per shared edge in the first pass. The
-second pass, which removes lanes that swap sides mid-run, adds between a
-few percent and about an eighth to the solve, depending on how many such
-swaps the first pass left.
+budget is 400 annealing moves per shared edge in the first pass, and
+never fewer than 10000. The second pass, which removes lanes that swap
+sides mid-run, adds between a few percent and about an eighth to the
+solve, depending on how many such swaps the first pass left.
 
 The solve lands close to the best order there is. `scripts/exact-order.py`
 proves that order with an exact solver: RAMBA 45, MFO 47, example 7. The
@@ -284,7 +286,8 @@ an hour later against the deployed site rather than a local test build,
 says the same: 62 s of interaction, one main-thread task over 8 ms of
 plugin work (the graph build at load, 50 ms inside a 264 ms load task),
 none with a finger on the glass, and plugin work per task at a median of
-0.36 ms, a p90 of 1.04 and a p99 of 4.63.
+0.36 ms, a p90 of 1.04 and a p99 of 4.63. The table's After column is
+the third trace.
 
 | What | Before the ribbon moved | After |
 |---|---|---|
@@ -341,9 +344,9 @@ is the buffer upload and the mesh swap, and it came to about a quarter of
 a millisecond a build on both maps. The layout and the mesh run in the
 worker and never touch a frame.
 
-Both maps held the refresh interval for 95 percent of their frames. The
-median is the refresh interval on both, so the distribution is tight and
-only the tail moves.
+Glacial Hills held the refresh interval for 95 percent of its frames, and
+RAMBA's 95th percentile was 19 ms. The median is the refresh interval on
+both, so the distribution is tight and only the tail moves.
 
 The tail is not the plugin's. The same run on a Pixel 8 in Chrome 154
 gave the same shape: median 16.7 ms, p95 21 ms, one frame of 138 ms. On
@@ -378,7 +381,7 @@ are still to be checked by hand.
 ## Lane features
 
 `laneFeatures({extent: 'full'})` lays out every lane of the requested
-routes for one zoom: 13 to 29 ms for all of RAMBA depending on zoom on
+routes for one zoom: 16 to 29 ms for all of RAMBA depending on zoom on
 the desktop, a median of 5.9 ms and up to 54 ms on the Pixel 8 above. The
 result is cached per zoom and route set. A single route's full extent is
 the same layout with only that route's pieces emitted, so it costs about
@@ -411,9 +414,10 @@ The script is a development tool. No map runs it, and `corepack pnpm
 test` does not need it. It needs Node.js and the Python package
 `ortools`, which is not a dependency of the library. The install is three
 lines, and they are at the top of the script. To check another network,
-pass the path of its GeoJSON file. If the map sets `uniformProperties`,
-pass the same names with `--uniform`, because they split edges and so
-change the problem.
+pass the path of its GeoJSON file. If its route id is not in a `route_id`
+property, name the property with `--route-property`. If the map sets
+`uniformProperties`, pass the same names with `--uniform`, because they
+split edges and so change the problem.
 
 For a phone, open a console attached to the page (Safari's Web Inspector
 for an iPhone, `chrome://inspect` for an Android phone) and paste

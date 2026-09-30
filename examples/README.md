@@ -25,7 +25,9 @@ one into your own project:
 - `/node_modules/maplibre-gl/dist/maplibre-gl.mjs` and its CSS.
 - `/test/fixtures/example.src.geojson`, the sample data. It is a trail
   network from OpenStreetMap: 10 routes in 80 LineString features, with
-  route colors, route names and a one-way tag.
+  route colors, route names and a one-way tag. `path-colors/` loads
+  `/test/fixtures/mfo.src.geojson` instead, the fixture whose paths carry
+  a difficulty grade.
 
 ## The examples
 
