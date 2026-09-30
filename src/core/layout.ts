@@ -4,7 +4,7 @@
  * lane that ends where other routes pass through runs to the node instead (see `drawOrder`).
  */
 
-import type {GraphEdge, LaneAppearance, LineGraph, RouteStep} from './graph.js';
+import type {GraphEdge, GraphNode, LaneAppearance, LineGraph, RouteStep} from './graph.js';
 import {openFolds} from './folds.js';
 import {restack} from './stacking.js';
 import {
@@ -20,6 +20,8 @@ import {
     polylineLength,
     reversed,
     simplify,
+    simplifyRank,
+    simplifyRanked,
     smoothCatmullRom,
     splineEndDirection,
     splineStartDirection,
@@ -434,8 +436,10 @@ function zoomState(g: LineGraph, zoom: number, style: LaneSizes, smooth: boolean
     const dirB: Vec[] = new Array(E);
     for (const e of g.edges) {
         const widest = ((e.routes.length - 1) / 2 + Math.abs(e.baseline ?? 0)) * spacing;
-        // Simplified in Mercator so only the surviving vertices are scaled.
-        const p = simplify(e.coords, Math.max(SIMPLIFY_TOLERANCE_PX, GENERALIZE_PER_OFFSET * widest) / scale);
+        // Simplified in Mercator so only the surviving vertices are scaled. The split tree is the
+        // same at every zoom, so it is ranked once and filtered here.
+        if (!e.simplifyRank) e.simplifyRank = simplifyRank(e.coords);
+        const p = simplifyRanked(e.coords, e.simplifyRank, Math.max(SIMPLIFY_TOLERANCE_PX, GENERALIZE_PER_OFFSET * widest) / scale);
         for (let i = 0; i < p.length; i++) p[i] *= scale;
         simplePx[e.id] = p;
         edgeLen[e.id] = polylineLength(p);
@@ -454,7 +458,13 @@ function zoomState(g: LineGraph, zoom: number, style: LaneSizes, smooth: boolean
     };
     const short = new Uint8Array(E);
     const degree = (n: number) => g.nodes[n].ports.length;
-    const bundleWidth = (n: number) => Math.max(...g.nodes[n].ports.map((p) => g.edges[p.edge].routes.length)) * spacing;
+    // The widest bundle at each node, once: the merge test reads it for both ends of every edge each pass.
+    const bundleWidth = new Float64Array(g.nodes.length);
+    for (const n of g.nodes) {
+        let widest = 0;
+        for (const p of n.ports) widest = Math.max(widest, g.edges[p.edge].routes.length);
+        bundleWidth[n.id] = widest * spacing;
+    }
     let junctions: Junction[] = [];
     let need: Float64Array = new Float64Array(2 * E);
     let change: Float64Array = new Float64Array(2 * E);
@@ -466,7 +476,7 @@ function zoomState(g: LineGraph, zoom: number, style: LaneSizes, smooth: boolean
         for (const e of g.edges) {
             if (short[e.id] || e.a === e.b || degree(e.a) < 2 || degree(e.b) < 2) continue;
             const len = edgeLen[e.id];
-            if (len < MERGE_BELOW_BUNDLE_WIDTHS * Math.max(bundleWidth(e.a), bundleWidth(e.b)) || len < change[2 * e.id] + change[2 * e.id + 1]) {
+            if (len < MERGE_BELOW_BUNDLE_WIDTHS * Math.max(bundleWidth[e.a], bundleWidth[e.b]) || len < change[2 * e.id] + change[2 * e.id + 1]) {
                 short[e.id] = 1;
                 merged = true;
             }
@@ -488,13 +498,22 @@ function zoomState(g: LineGraph, zoom: number, style: LaneSizes, smooth: boolean
 
     // How often each route ends under another bundle; drives the draw order.
     const endsUnder = new Map<string, number>();
+    // Whether another edge at the node carries a route other than r: the same test as before,
+    // without a closure per edge end.
+    const underOther = (node: GraphNode, edge: number, r: string): boolean => {
+        for (const p of node.ports) {
+            if (p.edge === edge) continue;
+            for (const o of g.edges[p.edge].routes) if (o !== r) return true;
+        }
+        return false;
+    };
     for (const e of g.edges) {
         if (short[e.id]) continue;
         for (const r of e.routes) {
             const ri = routeIndex.get(r)!;
-            for (const end of [0, 1]) {
+            for (let end = 0; end < 2; end++) {
                 const node = g.nodes[end === 0 ? e.a : e.b];
-                if (!continues[(2 * e.id + end) * routeCount + ri] && node.ports.some((p) => p.edge !== e.id && g.edges[p.edge].routes.some((o) => o !== r))) {
+                if (!continues[(2 * e.id + end) * routeCount + ri] && underOther(node, e.id, r)) {
                     endsUnder.set(r, (endsUnder.get(r) ?? 0) + 1);
                 }
             }

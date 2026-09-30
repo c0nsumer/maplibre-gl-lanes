@@ -133,6 +133,56 @@ export function simplify(p: Polyline, tolerance: number): Polyline {
     return out;
 }
 
+/**
+ * Douglas-Peucker's decisions for every tolerance at once: per vertex, the squared distance at
+ * which it survives, capped by its ancestors' in the split tree, since a vertex is never visited
+ * once an ancestor's split is under the tolerance. `simplifyRanked` at a tolerance keeps exactly
+ * the vertices `simplify` keeps, from the same comparisons. Both ends rank Infinity.
+ */
+export function simplifyRank(p: Polyline): Float64Array {
+    const n = p.length / 2;
+    const rank = new Float64Array(n);
+    if (n === 0) return rank;
+    rank[0] = Infinity;
+    rank[n - 1] = Infinity;
+    if (n <= 2) return rank;
+    const stack: number[] = [0, n - 1];
+    const cap: number[] = [Infinity];
+    while (stack.length) {
+        const last = stack.pop()!;
+        const first = stack.pop()!;
+        const above = cap.pop()!;
+        let maxD = 0;
+        let idx = -1;
+        const ax = p[first * 2], ay = p[first * 2 + 1];
+        const bx = p[last * 2], by = p[last * 2 + 1];
+        for (let i = first + 1; i < last; i++) {
+            const d = segmentDistanceSq(p[i * 2], p[i * 2 + 1], ax, ay, bx, by);
+            if (d > maxD) {
+                maxD = d;
+                idx = i;
+            }
+        }
+        if (maxD > 0 && idx > 0) {
+            const r = maxD < above ? maxD : above;
+            rank[idx] = r;
+            stack.push(first, idx, idx, last);
+            cap.push(r, r);
+        }
+    }
+    return rank;
+}
+
+/** `simplify` from a rank computed once for the line; see `simplifyRank`. */
+export function simplifyRanked(p: Polyline, rank: Float64Array, tolerance: number): Polyline {
+    const n = p.length / 2;
+    if (n <= 2 || tolerance <= 0) return p.slice();
+    const tol2 = tolerance * tolerance;
+    const out: Polyline = [];
+    for (let i = 0; i < n; i++) if (rank[i] > tol2) out.push(p[i * 2], p[i * 2 + 1]);
+    return out;
+}
+
 function segmentDistanceSq(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
     let dx = bx - ax;
     let dy = by - ay;

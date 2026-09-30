@@ -67,6 +67,8 @@ export interface GraphEdge {
     baseline?: number;
     /** @internal Filled lazily by the layout. */
     bounds?: {minX: number; minY: number; maxX: number; maxY: number};
+    /** @internal Filled lazily by the layout; see `simplifyRank`. */
+    simplifyRank?: Float64Array;
     /** Values of the `uniformProperties` along this edge, when any were requested. */
     properties?: Record<string, unknown>;
 }
