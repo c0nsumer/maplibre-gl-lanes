@@ -353,15 +353,22 @@ export function removeLoopsAnchored(p: Polyline, anchors: Polyline, window: numb
     for (;;) {
         if (guard++ > 1000) break;
         const n = pts.length / 2;
+        // Segment lengths once per pass: the window scan reads each many times.
+        const len = new Float64Array(Math.max(0, n - 1));
+        for (let k = 0; k < n - 1; k++) len[k] = Math.hypot(pts[k * 2 + 2] - pts[k * 2], pts[k * 2 + 3] - pts[k * 2 + 1]);
         let found: {i: number; j: number; x: number; y: number} | null = null;
         outer: for (let i = 0; i < n - 1 && !found; i++) {
+            const ax = pts[i * 2], ay = pts[i * 2 + 1], bx = pts[i * 2 + 2], by = pts[i * 2 + 3];
+            const minX = ax < bx ? ax : bx, maxX = ax < bx ? bx : ax;
+            const minY = ay < by ? ay : by, maxY = ay < by ? by : ay;
             let acc = 0;
             for (let j = i + 2; j < n - 1; j++) {
-                acc += Math.hypot(pts[j * 2] - pts[j * 2 - 2], pts[j * 2 + 1] - pts[j * 2 - 1]);
+                acc += len[j - 1];
                 if (acc > window) break;
-                const hit = intersectSegments(
-                    pts[i * 2], pts[i * 2 + 1], pts[i * 2 + 2], pts[i * 2 + 3],
-                    pts[j * 2], pts[j * 2 + 1], pts[j * 2 + 2], pts[j * 2 + 3]);
+                const cx = pts[j * 2], cy = pts[j * 2 + 1], dx = pts[j * 2 + 2], dy = pts[j * 2 + 3];
+                // Two segments whose boxes are apart cannot cross; this is nearly every pair.
+                if ((cx < minX && dx < minX) || (cx > maxX && dx > maxX) || (cy < minY && dy < minY) || (cy > maxY && dy > maxY)) continue;
+                const hit = intersectSegments(ax, ay, bx, by, cx, cy, dx, dy);
                 if (hit) {
                     found = {i, j, x: hit.x, y: hit.y};
                     break outer;
