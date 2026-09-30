@@ -305,7 +305,7 @@ export function deriveChains(nodes: GraphNode[], edges: GraphEdge[], routes: Map
     for (const n of nodes) n.transitions = [];
     const chains = new Map<string, RouteChain[]>();
     const portIndex = (node: GraphNode, edge: number, end: 'a' | 'b') => node.ports.findIndex((p) => p.edge === edge && p.end === end);
-    const outDir = (node: GraphNode, edge: number, end: 'a' | 'b'): [number, number] => {
+    const outDir = (edge: number, end: 'a' | 'b'): [number, number] => {
         const c = edges[edge].coords;
         let dx: number, dy: number;
         if (end === 'a') {
@@ -366,14 +366,14 @@ export function deriveChains(nodes: GraphNode[], edges: GraphEdge[], routes: Map
                 unused.delete(nextEdge.id);
                 const far = forward ? nextEdge.b : nextEdge.a;
                 const farEnd: 'a' | 'b' = forward ? 'b' : 'a';
-                const d = outDir(nodes[far], nextEdge.id, farEnd);
+                const d = outDir(nextEdge.id, farEnd);
                 arriving = [-d[0], -d[1]];
                 node = far;
                 let best: GraphEdge | null = null;
                 let bestDot = -Infinity;
                 for (const p of nodes[node].ports) {
                     if (!unused.has(p.edge)) continue;
-                    const o = outDir(nodes[node], p.edge, p.end);
+                    const o = outDir(p.edge, p.end);
                     const dot = o[0] * arriving[0] + o[1] * arriving[1];
                     if (dot > bestDot + 1e-9 || (Math.abs(dot - bestDot) <= 1e-9 && best && p.edge < best.id)) {
                         bestDot = dot;
@@ -408,12 +408,12 @@ export function deriveChains(nodes: GraphNode[], edges: GraphEdge[], routes: Map
         for (const ce of chainEndPorts) {
             const n = nodes[ce.node];
             const own = n.ports[ce.port];
-            const arriveDir = outDir(n, own.edge, own.end).map((v) => -v) as [number, number];
+            const arriveDir = outDir(own.edge, own.end).map((v) => -v) as [number, number];
             let best = -1;
             let bestDot = -Infinity;
             n.ports.forEach((p, i) => {
                 if (i === ce.port || !edges[p.edge].routes.includes(rid)) return;
-                const o = outDir(n, p.edge, p.end);
+                const o = outDir(p.edge, p.end);
                 const dot = o[0] * arriveDir[0] + o[1] * arriveDir[1];
                 if (dot > bestDot) {
                     bestDot = dot;

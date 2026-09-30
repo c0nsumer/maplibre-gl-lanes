@@ -92,7 +92,6 @@ describe('connectors of routes turning together', () => {
         ];
         for (const [name, zoom, allowed] of cases) {
             const r = pairsOffPitch(name, zoom, 0.6 * 8);
-            console.log(`${name} z${zoom}: ${r.pairs} pairs, ${r.off} beyond half a pitch, worst ${r.worst.toFixed(2)}, closest ${r.closest.toFixed(2)}`);
             expect(r.pairs).toBeGreaterThan(20);
             expect(r.off).toBeLessThanOrEqual(allowed);
             expect(r.closest).toBeGreaterThan(0.5 * 8);
