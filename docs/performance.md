@@ -360,6 +360,22 @@ prints the iPhone table above. A backgrounded tab suspends
 `requestAnimationFrame`, and the layer only builds inside the render
 call, so a hidden page reports zero frames and zero builds.
 
+To check the lane ordering against the best possible order, run
+`scripts/exact-order.py` from the repo root. The library orders lanes with
+a local search, which is fast and proves nothing. The script gives the
+same problem to an exact solver, OR-Tools CP-SAT. For each fixture it
+prints the cost the library reached, the lowest cost any order can reach,
+and whether that lowest cost was proved. Run it after a change to
+`src/core/order.ts`.
+
+The script is a development tool. No map runs it, and `corepack pnpm
+test` does not need it. It needs Node.js and the Python package
+`ortools`, which is not a dependency of the library. The install is three
+lines, and they are at the top of the script. To check another network,
+pass the path of its GeoJSON file. If the map sets `uniformProperties`,
+pass the same names with `--uniform`, because they split edges and so
+change the problem.
+
 For the cost of the draw on a device, frame the view, then paste
 `scripts/draw-probe.js` into the same console. It draws that view with an
 opaque casing and with the page's own, makes the GPU finish before each

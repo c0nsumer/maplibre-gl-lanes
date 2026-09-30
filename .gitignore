@@ -8,4 +8,5 @@ demo/public/dist
 shots/
 .claude/
 __pycache__/
+.venv/
 examples/bundler/pnpm-lock.yaml
