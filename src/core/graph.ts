@@ -130,6 +130,8 @@ interface ElemEdge {
     v: string;
     routes: Map<string, number>;
     props: Record<string, unknown> | null;
+    /** Route set and uniform property values as one string, built on first use. */
+    sig: string | null;
 }
 
 export function buildLineGraph(features: GJFeature[], opts: LineGraphOptions = {}): LineGraph {
@@ -180,7 +182,7 @@ export function buildLineGraph(features: GJFeature[], opts: LineGraphOptions = {
                     const ek = forward ? `${prevKey}|${k}` : `${k}|${prevKey}`;
                     let e = elem.get(ek);
                     if (!e) {
-                        e = {u: forward ? prevKey : k, v: forward ? k : prevKey, routes: new Map(), props: uniformProps};
+                        e = {u: forward ? prevKey : k, v: forward ? k : prevKey, routes: new Map(), props: uniformProps, sig: null};
                         elem.set(ek, e);
                         for (const vk of [prevKey, k]) {
                             let s = adjacency.get(vk);
@@ -197,13 +199,29 @@ export function buildLineGraph(features: GJFeature[], opts: LineGraphOptions = {
         }
     }
 
-    const routeSig = (e: ElemEdge) => [...e.routes.keys()].sort().join('\0');
-    const propSig = (e: ElemEdge) => (e.props ? JSON.stringify(uniform.map((k) => e.props![k] ?? null)) : '');
+    // Each vertex is asked several times, from the junction scan and from every walk that
+    // passes it, and each answer builds two signatures per incident edge: once each is enough.
+    const sigOf = (e: ElemEdge): string => {
+        if (e.sig === null) {
+            const routeSig = [...e.routes.keys()].sort().join('\0');
+            e.sig = routeSig + '\u0001' + (e.props ? JSON.stringify(uniform.map((k) => e.props![k] ?? null)) : '');
+        }
+        return e.sig;
+    };
+    const junction = new Map<string, boolean>();
     const isJunction = (vk: string): boolean => {
-        const inc = adjacency.get(vk)!;
-        if (inc.size !== 2) return true;
-        const [e1, e2] = [...inc].map((k) => elem.get(k)!);
-        return routeSig(e1) !== routeSig(e2) || propSig(e1) !== propSig(e2);
+        let is = junction.get(vk);
+        if (is === undefined) {
+            const inc = adjacency.get(vk)!;
+            if (inc.size !== 2) {
+                is = true;
+            } else {
+                const [k1, k2] = inc;
+                is = sigOf(elem.get(k1)!) !== sigOf(elem.get(k2)!);
+            }
+            junction.set(vk, is);
+        }
+        return is;
     };
 
     const nodeIndex = new Map<string, number>();
