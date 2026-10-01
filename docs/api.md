@@ -338,6 +338,8 @@ of its `laneFeatures`. Those lanes get no halo and no outline. They stay in
 their place in the drawing order, so lanes drawn above them stay above
 them, dimmed. A connector counts as part of the edge it arrives from.
 `setHighlight(null)` clears `bright` with the rest of the highlight.
+Edge ids belong to one graph, and `setGraph` keeps the highlight. After
+`setGraph`, pass `bright` again with ids from the new graph.
 
 ##### `HighlightStyle`
 

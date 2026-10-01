@@ -8,8 +8,8 @@ follows Keep a Changelog, and the project uses semantic versioning.
 ### Added
 
 - `HighlightStyle.bright` keeps the lanes on some graph edges at full
-  opacity while a highlight dims the rest, such as a path picked off the
-  highlighted route to read it. Those lanes get no halo and no outline,
+  opacity while a highlight dims the rest. Use it to show a path picked
+  off the highlighted route. Those lanes get no halo and no outline,
   and keep their place in the drawing order. A translucent casing stays
   blended once where a bright lane meets a dimmed piece of its own route.
 
