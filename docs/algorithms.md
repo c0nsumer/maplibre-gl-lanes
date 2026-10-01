@@ -247,6 +247,13 @@ in the fragment shader. Three additions:
   depth value at the far plane, which every later MapLibre layer passes
   over. It is not in the stencil buffer, where MapLibre keeps tile clipping
   masks that a custom layer has no way to invalidate.
+- A translucent fill is blended once per pixel too. A route's pieces
+  overlap at every joint, in their round caps and joins, so a dimmed lane
+  would show a bright spot at each one. The fill keeps a second mark,
+  nearer than the casing's, and clears it once the route is drawn. Lanes of
+  different routes still blend where they cross. On a two-color dashed
+  lane, the dashes take their pixels first and the dash color fills the
+  rest, so the dash color does not show through the dashes.
 
 Each route is drawn in one pass, in one order for the whole map. Routes
 whose lanes end under other bundles are drawn first, so the bundles cover

@@ -3,8 +3,9 @@
  * depth buffer (see `DEPTH_MARK` in the layer). The drawing itself is
  * shaders, so what is checked here is what the layer asks of the context:
  * that an opaque casing is drawn as it always was, that a translucent one
- * gets the passes that make the mark work, and that the stencil buffer,
- * which holds MapLibre's tile clipping masks, is never written.
+ * gets the passes that make the mark work, that a translucent fill paints
+ * each pixel once the same way, and that the stencil buffer, which holds
+ * MapLibre's tile clipping masks, is never written.
  */
 import {describe, it, expect} from 'vitest';
 import {readFileSync} from 'node:fs';
@@ -72,7 +73,7 @@ const mapStub = {
     unproject: () => ({lng: 0, lat: 0}),
 };
 
-function drawn(opts: {casingColor?: string; opacity?: number}, depthBits = 24) {
+function drawn(opts: {casingColor?: string | null; opacity?: number}, depthBits = 24) {
     const layer = new LaneLayer({id: 'lanes', graph, sizes: style, worker: false, ...opts});
     const rec = recordingGl(depthBits);
     layer.onAdd(mapStub, rec.gl);
@@ -130,6 +131,47 @@ describe('a translucent casing', () => {
 
     it('leaves color and depth writes as it found them', () => {
         expect(now).toMatchObject({color: true, depthMask: false, depthTest: false, cover: 0});
+    });
+});
+
+describe('a translucent fill', () => {
+    const {calls, draws, now} = drawn({casingColor: null, opacity: 0.6});
+    const groups = drawn({casingColor: null}).draws.length;
+    const fills = draws.slice(1);
+
+    it('paints each pixel once: fragments that cover their pixel test and set a fill mark, the rest only test it', () => {
+        expect(draws[0]).toMatchObject({color: false, depthFunc: GL.ALWAYS, depthMask: true, depthRange: 1});
+        const painted = fills.filter((d) => d.color);
+        expect(painted).toHaveLength(2 * groups);
+        for (let i = 0; i < painted.length; i += 2) {
+            expect(painted[i]).toMatchObject({outset: FILL, cover: 1, depthFunc: GL.LESS, depthMask: true});
+            expect(painted[i + 1]).toMatchObject({outset: FILL, cover: 2, depthFunc: GL.LESS, depthMask: false});
+            expect(painted[i].depthRange).toBeLessThan(1);
+            expect(painted[i].depthRange).toBe(painted[i + 1].depthRange);
+        }
+    });
+
+    it('clears the mark under each route once its fill is down, so other routes still blend over it', () => {
+        const clears = fills.filter((d) => !d.color);
+        expect(clears).toHaveLength(groups);
+        for (const d of clears) expect(d).toMatchObject({cover: 3, depthFunc: GL.ALWAYS, depthMask: true, depthRange: 1});
+        expect(fills[fills.length - 1].color).toBe(false);
+    });
+
+    it('sits nearer than the casing mark, so a fill passes over its own casing', () => {
+        const cased = drawn({casingColor: 'rgba(255, 255, 255, 0.3)', opacity: 0.6}).draws;
+        const casing = cased.find((d) => d.outset === CASING && d.cover === 1)!;
+        const fill = cased.find((d) => d.outset === FILL && d.cover === 1)!;
+        expect(fill.depthRange).toBeLessThan(casing.depthRange);
+    });
+
+    it('never writes the stencil buffer, and leaves depth as it found it', () => {
+        expect(calls.filter((c) => /stencil/i.test(c.name) || c.name === 'clear')).toEqual([]);
+        expect(now).toMatchObject({color: true, depthMask: false, depthTest: false, cover: 0});
+    });
+
+    it('is drawn as it always was when opaque', () => {
+        expect(drawn({casingColor: null}).calls.filter(touchesDepth)).toEqual([]);
     });
 });
 

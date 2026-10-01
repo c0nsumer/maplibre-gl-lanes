@@ -282,7 +282,10 @@ Alpha in `casingColor` is honored. The casing is drawn under the fill, so a
 translucent casing shows the map through its outer rim. It is blended once
 per pixel, so it reads the same along the seam between two lanes, where
 their casings overlap, as on the outside of the bundle. The same holds when
-`opacity` is below 1. The layer uses the depth buffer for this, and needs
+`opacity` is below 1. A lane below full opacity, through `opacity` or a
+highlight's `dim`, is also blended once per pixel. It does not brighten
+where its own pieces overlap. Lanes of different routes still blend where
+they cross. The layer uses the depth buffer for this, and needs
 one of at least 24 bits. It never writes the stencil buffer. One
 consequence: if your style has an opaque fill layer above the lane layer,
 and a translucent layer between the two, the layer between shows over the

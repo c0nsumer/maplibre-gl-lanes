@@ -15,6 +15,11 @@ follows Keep a Changelog, and the project uses semantic versioning.
 
 ### Fixed
 
+- A lane below full opacity, through `setOpacity` or a highlight's `dim`,
+  no longer shows bright spots at its joints. Its pieces overlap there, and
+  each overlap was blended twice. The fill is now blended once per pixel,
+  as a translucent casing already was. On a two-color dashed lane, the dash
+  color no longer shows through the dashes.
 - A highlight's `dim` now applies wherever the map is. Before, it stopped
   when no highlighted route was in the area last built, such as after
   panning away from the route.

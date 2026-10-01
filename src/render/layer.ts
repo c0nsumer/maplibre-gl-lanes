@@ -120,6 +120,15 @@ void main() {
  */
 const DEPTH_CLEAR = 1;
 const DEPTH_MARK = 1 - 1 / (1 << 17);
+/**
+ * A translucent fill paints each pixel once per route the same way: its
+ * pieces overlap at every joint, in their round caps and joins, and would
+ * blend twice there. Nearer than the casing mark, so a fill passes over its
+ * own casing; the soft edges of dashes are nearer still, to go over the
+ * dash color around them.
+ */
+const DEPTH_FILL = 1 - 2 / (1 << 17);
+const DEPTH_FILL_OVER = 1 - 3 / (1 << 17);
 /** Two depth values a hair apart need more than the 16 bits some buffers have. */
 const MIN_DEPTH_BITS = 24;
 /** Values of `u_cover`: which fragments a draw keeps, by pixel coverage. */
@@ -1018,9 +1027,11 @@ export class LaneLayer implements CustomLayerInterface {
         }
         // The dim follows the highlight, not the lifted route's presence in this build.
         const dimmed = !!hl && hl.dim < 1;
+        const translucent = this.opacity < 1 || dimmed;
         // Only a casing that lets the map through needs blending once.
-        const once = this.canMark && !!this.casing && (this.casing[3] < 1 || this.opacity < 1 || (dimmed && hl!.dim < 1));
-        if (once) {
+        const once = this.canMark && !!this.casing && (this.casing[3] < 1 || translucent);
+        const marks = once || (this.canMark && translucent);
+        if (marks) {
             // Assume nothing about incoming depth: clear under every casing pixel.
             gl.enable(gl.DEPTH_TEST);
             gl.depthFunc(gl.ALWAYS);
@@ -1028,16 +1039,17 @@ export class LaneLayer implements CustomLayerInterface {
             gl.depthRange(DEPTH_CLEAR, DEPTH_CLEAR);
             gl.colorMask(false, false, false, false);
             gl.uniform1f(uniforms.u_outset, style.width / 2 + style.casingWidth + aa);
-            gl.uniform4fv(uniforms.u_override, this.casing!);
+            gl.uniform4fv(uniforms.u_override, this.casing ?? [0, 0, 0, 1]);
             gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0);
             gl.colorMask(true, true, true, true);
             gl.depthMask(false);
         }
-        const split = dimmed && hl!.dim < 1 && hl!.bright.size > 0 ? this.splitFor(mesh, hl!) : null;
-        const opacities = split ? {dimmed: this.opacity * hl!.dim, bright: this.opacity, split} : null;
-        if (dimmed) gl.uniform1f(uniforms.u_opacity, this.opacity * hl!.dim);
+        const split = dimmed && hl!.bright.size > 0 ? this.splitFor(mesh, hl!) : null;
+        const restOpacity = dimmed ? this.opacity * hl!.dim : this.opacity;
+        const opacities = split ? {dimmed: restOpacity, bright: this.opacity, split} : null;
+        if (dimmed) gl.uniform1f(uniforms.u_opacity, restOpacity);
         for (const run of runs) {
-            if (!lifted.has(run[0])) this.drawRoute(gl, uniforms, run, style, dashStyle, aa, once, opacities);
+            if (!lifted.has(run[0])) this.drawRoute(gl, uniforms, run, style, dashStyle, aa, once, marks, restOpacity, opacities);
         }
         if (hl && liftedRuns.length) {
             gl.uniform1f(uniforms.u_opacity, this.opacity);
@@ -1063,9 +1075,9 @@ export class LaneLayer implements CustomLayerInterface {
                 for (const gi of lifted) gl.drawElements(gl.TRIANGLES, mesh.groups[gi][1], gl.UNSIGNED_INT, mesh.groups[gi][0] * 4);
             }
             if (once) gl.depthMask(false);
-            for (const run of liftedRuns) this.drawRoute(gl, uniforms, run, style, dashStyle, aa, once);
+            for (const run of liftedRuns) this.drawRoute(gl, uniforms, run, style, dashStyle, aa, once, marks, this.opacity);
         }
-        if (once) {
+        if (marks) {
             // The next layer may be another custom layer, which MapLibre does not reset for.
             gl.disable(gl.DEPTH_TEST);
             gl.depthFunc(gl.LEQUAL);
@@ -1101,9 +1113,15 @@ export class LaneLayer implements CustomLayerInterface {
      * the neighbor's own casing already holds the mark, so a full-strength
      * casing never shows through the neighbor's translucent fill. Their
      * fills go last, so they cover the dimmed caps that reach into them.
+     *
+     * A translucent fill paints each pixel once (`DEPTH_FILL`), over all of
+     * one side's groups, and the mark is cleared only after them, so a
+     * connector meeting a lane of another look counts as one too. The groups
+     * go last first, since the first full fragment keeps its pixel, so the
+     * one on top stays the one on top.
      */
     private drawRoute(gl: WebGL2RenderingContext, uniforms: Record<string, WebGLUniformLocation | null>, run: number[], style: {width: number; casingWidth: number}, dashStyle: {width: number}, aa: number, once: boolean,
-        opacities: {dimmed: number; bright: number; split: (RunSplit | null)[]} | null = null): void {
+        marks: boolean, opacity: number, opacities: {dimmed: number; bright: number; split: (RunSplit | null)[]} | null = null): void {
         const mesh = this.mesh!;
         const meta = this.graph.routes.get(mesh.groupRoutes[run[0]]);
         const periodOf = (look: LaneLook): [number, number] =>
@@ -1171,32 +1189,71 @@ export class LaneLayer implements CustomLayerInterface {
         if (once) gl.depthFunc(gl.ALWAYS);
         gl.uniform1f(uniforms.u_outset, style.width / 2 + aa);
         const fillPasses: Pass[] = lit ? ['dimmed', 'bright'] : ['all'];
-        for (const pass of fillPasses) for (const gi of run) {
-            if (pass === 'bright' && !split![gi]) continue;
+        for (const pass of fillPasses) {
+            const groups = pass === 'bright' ? run.filter((gi) => split![gi]) : run;
+            const paintOnce = marks && (pass === 'all' ? opacity : pass === 'bright' ? opacities!.bright : opacities!.dimmed) < 1;
+            // Full fragments set the fill mark, partial ones only test it, as for the casing.
+            const fill = (paint: () => void, depth: number) => {
+                if (!paintOnce) {
+                    paint();
+                    return;
+                }
+                gl.depthFunc(gl.LESS);
+                gl.depthRange(depth, depth);
+                gl.depthMask(true);
+                gl.uniform1f(uniforms.u_cover, COVER_FULL);
+                paint();
+                gl.depthMask(false);
+                gl.uniform1f(uniforms.u_cover, COVER_PARTIAL);
+                paint();
+                gl.uniform1f(uniforms.u_cover, COVER_ALL);
+            };
             setOpacity(pass);
-            const look = mesh.groupLooks[gi];
-            const dash = look.dash;
-            gl.uniform1f(uniforms.u_cap, look.dashCap === 'round' ? 1 : 0);
-            if (dash && look.dashColor) {
-                gl.uniform4fv(uniforms.u_override, this.dashColor(look.dashColor));
-                draw(gi, pass);
-                gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
-                drawDashes(gi, look, pass);
-            } else if (dash) {
-                gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
-                drawDashes(gi, look, pass);
-            } else {
-                gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
-                draw(gi, pass);
+            for (const gi of paintOnce ? [...groups].reverse() : groups) {
+                const look = mesh.groupLooks[gi];
+                const dash = look.dash;
+                gl.uniform1f(uniforms.u_cap, look.dashCap === 'round' ? 1 : 0);
+                if (dash && look.dashColor && paintOnce) {
+                    // The dashes claim their pixels before the dash color, which
+                    // would show through them; their soft edges go over it after.
+                    gl.depthFunc(gl.LESS);
+                    gl.depthRange(DEPTH_FILL, DEPTH_FILL);
+                    gl.depthMask(true);
+                    gl.uniform1f(uniforms.u_cover, COVER_FULL);
+                    gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
+                    drawDashes(gi, look, pass);
+                    gl.uniform4fv(uniforms.u_override, this.dashColor(look.dashColor));
+                    fill(() => draw(gi, pass), DEPTH_FILL);
+                    gl.depthRange(DEPTH_FILL_OVER, DEPTH_FILL_OVER);
+                    gl.uniform1f(uniforms.u_cover, COVER_PARTIAL);
+                    gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
+                    drawDashes(gi, look, pass);
+                    gl.uniform1f(uniforms.u_cover, COVER_ALL);
+                } else if (dash && look.dashColor) {
+                    gl.uniform4fv(uniforms.u_override, this.dashColor(look.dashColor));
+                    draw(gi, pass);
+                    gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
+                    drawDashes(gi, look, pass);
+                } else if (dash) {
+                    gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
+                    fill(() => drawDashes(gi, look, pass), DEPTH_FILL);
+                } else {
+                    gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
+                    fill(() => draw(gi, pass), DEPTH_FILL);
+                }
             }
-            if (once) {
-                // Clear the mark in the fill's shape; uncolored dash gaps still show casing.
+            if (once || paintOnce) {
+                // Clear both marks in the fill's shape; uncolored dash gaps still show casing.
+                gl.depthFunc(gl.ALWAYS);
                 gl.colorMask(false, false, false, false);
                 gl.depthMask(true);
                 gl.depthRange(DEPTH_CLEAR, DEPTH_CLEAR);
                 gl.uniform1f(uniforms.u_cover, COVER_HALF);
-                if (dash && !look.dashColor) drawDashes(gi, look, pass);
-                else draw(gi, pass);
+                for (const gi of groups) {
+                    const look = mesh.groupLooks[gi];
+                    if (look.dash && !look.dashColor) drawDashes(gi, look, pass);
+                    else draw(gi, pass);
+                }
                 gl.uniform1f(uniforms.u_cover, COVER_ALL);
                 gl.depthMask(false);
                 gl.colorMask(true, true, true, true);
