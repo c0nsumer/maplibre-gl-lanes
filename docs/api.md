@@ -328,6 +328,14 @@ that, draw it from `laneFeatures` in a layer of your own.
 `getHighlight()` returns the highlighted routes, in the order they were
 given.
 
+`bright` keeps some graph edges at full opacity under `dim`, though their
+routes are not lifted. Use it to show a path picked off the highlighted
+route: pass the edge from `queryLane` (`hit.edge`), or the `edge` property
+of its `laneFeatures`. Those lanes get no halo and no outline. They stay in
+their place in the drawing order, so lanes drawn above them stay above
+them, dimmed. A connector counts as part of the edge it arrives from.
+`setHighlight(null)` clears `bright` with the rest of the highlight.
+
 ##### `HighlightStyle`
 
 | Field | Default | What it does |
@@ -338,6 +346,7 @@ given.
 | `outline` | `'#000'` | Outline between the halo and the lane. `null` draws none. |
 | `outlineWidth` | `1.5` | Outline width beyond the casing, px per side. |
 | `dim` | `1` | Opacity factor for the routes that are not highlighted. |
+| `bright` | none | Graph edge ids whose lanes keep full opacity under `dim`. Has no effect without a `dim` below 1. |
 
 `haloWidth`, `haloBlur` and `outlineWidth` are each a `HighlightWidth`: a
 number, or a `(zoom) => number`. They take a callback because lane widths

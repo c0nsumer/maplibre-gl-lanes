@@ -12,7 +12,7 @@ import {toTransfer, unpackPaths} from '../core/serialize.js';
 import {nextRequestId, sendToWorker} from '../core/worker-client.js';
 import type {LayoutRequest, LayoutResponse} from '../worker/lanes.worker.js';
 import type {Bounds} from '../core/geometry.js';
-import {tessellate, parseColor, TessellateCache, FLOATS_PER_VERTEX, type Mesh} from './tessellate.js';
+import {tessellate, parseColor, splitRanges, TessellateCache, FLOATS_PER_VERTEX, type Mesh} from './tessellate.js';
 
 // Comments stay out of the shader strings, which ship as written.
 
@@ -213,6 +213,12 @@ export interface HighlightStyle {
     outlineWidth?: HighlightWidth;
     /** Opacity factor for the routes that are not highlighted. Default 1 (unchanged). */
     dim?: number;
+    /**
+     * Graph edges whose lanes keep full opacity under `dim`, though their
+     * routes are not highlighted. They get no halo and no outline, and stay
+     * where they are in the drawing order. Default none.
+     */
+    bright?: Iterable<number>;
 }
 
 interface ResolvedHighlight {
@@ -222,6 +228,15 @@ interface ResolvedHighlight {
     outline: Float32Array | null;
     outlineWidth: HighlightWidth;
     dim: number;
+    bright: Set<number>;
+}
+
+/** Per group of a run, the index ranges drawn dimmed and bright, ribbon and dots. */
+interface RunSplit {
+    dimmed: [number, number][];
+    bright: [number, number][];
+    dotsDimmed: [number, number][];
+    dotsBright: [number, number][];
 }
 
 function widthAt(w: HighlightWidth, zoom: number): number {
@@ -315,6 +330,8 @@ export class LaneLayer implements CustomLayerInterface {
     private fullPending = new Map<string, Promise<GeoJSON.FeatureCollection>>();
     private highlight: string[] = [];
     private highlightStyle: ResolvedHighlight | null = null;
+    /** Each group's bright split, kept until the mesh or the highlight changes. */
+    private brightSplit: {mesh: Mesh; style: ResolvedHighlight; groups: (RunSplit | null)[]} | null = null;
     private timings = {layoutMs: 0, meshMs: 0, renderThreadMs: 0};
 
     constructor(opts: LaneLayerOptions) {
@@ -401,6 +418,7 @@ export class LaneLayer implements CustomLayerInterface {
             outline: style.outline === null ? null : rgba(parseColor(style.outline ?? '#000000')),
             outlineWidth: style.outlineWidth ?? 1.5,
             dim: style.dim ?? 1,
+            bright: new Set(style.bright ?? []),
         };
         this.map?.triggerRepaint();
     }
@@ -1014,9 +1032,11 @@ export class LaneLayer implements CustomLayerInterface {
             gl.colorMask(true, true, true, true);
             gl.depthMask(false);
         }
+        const split = dimmed && hl!.dim < 1 && hl!.bright.size > 0 ? this.splitFor(mesh, hl!) : null;
+        const opacities = split ? {dimmed: this.opacity * hl!.dim, bright: this.opacity, split} : null;
         if (dimmed) gl.uniform1f(uniforms.u_opacity, this.opacity * hl!.dim);
         for (const run of runs) {
-            if (!lifted.has(run[0])) this.drawRoute(gl, uniforms, run, style, dashStyle, aa, once);
+            if (!lifted.has(run[0])) this.drawRoute(gl, uniforms, run, style, dashStyle, aa, once, opacities);
         }
         if (hl && liftedRuns.length) {
             gl.uniform1f(uniforms.u_opacity, this.opacity);
@@ -1053,37 +1073,84 @@ export class LaneLayer implements CustomLayerInterface {
         gl.bindVertexArray(null);
     }
 
+    /** The bright split of every group, worked out once per mesh and highlight. */
+    private splitFor(mesh: Mesh, hl: ResolvedHighlight): (RunSplit | null)[] {
+        const cached = this.brightSplit;
+        if (cached && cached.mesh === mesh && cached.style === hl) return cached.groups;
+        const groups: (RunSplit | null)[] = [];
+        for (let gi = 0; gi < mesh.groups.length; gi++) {
+            const ribbon = splitRanges(mesh.groups[gi], mesh.groupPieces[gi], hl.bright);
+            const dots = splitRanges(mesh.groupDots[gi], mesh.groupDotPieces[gi], hl.bright);
+            groups.push(ribbon.bright.length || dots.bright.length
+                ? {dimmed: ribbon.dimmed, bright: ribbon.bright, dotsDimmed: dots.dimmed, dotsBright: dots.bright}
+                : null);
+        }
+        this.brightSplit = {mesh, style: hl, groups};
+        return groups;
+    }
+
     /**
      * Every casing before any fill, or a group's casing would seam over its
      * neighbor's fill. `dashStyle` is in the mesh's build pixels.
+     *
+     * With `opacities`, the pieces on bright edges draw at full opacity in
+     * the same passes as the rest of the route, so they keep its place in
+     * the drawing order and its once-only casing. Their casings go after
+     * the dimmed ones: where a bright cap reaches into a dimmed neighbor,
+     * the neighbor's own casing already holds the mark, so a full-strength
+     * casing never shows through the neighbor's translucent fill. Their
+     * fills go last, so they cover the dimmed caps that reach into them.
      */
-    private drawRoute(gl: WebGL2RenderingContext, uniforms: Record<string, WebGLUniformLocation | null>, run: number[], style: {width: number; casingWidth: number}, dashStyle: {width: number}, aa: number, once: boolean): void {
+    private drawRoute(gl: WebGL2RenderingContext, uniforms: Record<string, WebGLUniformLocation | null>, run: number[], style: {width: number; casingWidth: number}, dashStyle: {width: number}, aa: number, once: boolean,
+        opacities: {dimmed: number; bright: number; split: (RunSplit | null)[]} | null = null): void {
         const mesh = this.mesh!;
         const meta = this.graph.routes.get(mesh.groupRoutes[run[0]]);
         const periodOf = (look: LaneLook): [number, number] =>
             look.dash ? [look.dash[0] * dashStyle.width, look.dash[1] * dashStyle.width] : [0, 0];
-        const draw = (gi: number) =>
-            gl.drawElements(gl.TRIANGLES, mesh.groups[gi][1], gl.UNSIGNED_INT, mesh.groups[gi][0] * 4);
+        // A pass is one side of the bright split, or the whole route when nothing is bright.
+        type Pass = 'all' | 'dimmed' | 'bright';
+        const split = opacities ? opacities.split : null;
+        const ribbon = (gi: number, pass: Pass): [number, number][] => {
+            const sp = split && split[gi];
+            if (!sp) return pass === 'bright' ? [] : [mesh.groups[gi]];
+            return pass === 'bright' ? sp.bright : sp.dimmed;
+        };
+        const dotRanges = (gi: number, pass: Pass): [number, number][] => {
+            const sp = split && split[gi];
+            if (!sp) return pass === 'bright' ? [] : [mesh.groupDots[gi]];
+            return pass === 'bright' ? sp.dotsBright : sp.dotsDimmed;
+        };
+        const drawAll = (ranges: [number, number][]) => {
+            for (const [first, count] of ranges) if (count) gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_INT, first * 4);
+        };
+        const draw = (gi: number, pass: Pass) => drawAll(ribbon(gi, pass));
         // Dots are the mesh's own quads: cut from the ribbon they are round only where it is straight.
-        const drawDashes = (gi: number, look: LaneLook) => {
+        const drawDashes = (gi: number, look: LaneLook, pass: Pass) => {
             const dots = mesh.groupDots[gi];
             if (look.dash![0] === 0 && dots && dots[1]) {
-                gl.drawElements(gl.TRIANGLES, dots[1], gl.UNSIGNED_INT, dots[0] * 4);
+                drawAll(dotRanges(gi, pass));
                 return;
             }
             const period = periodOf(look);
             gl.uniform2f(uniforms.u_dash, period[0], period[1]);
-            draw(gi);
+            draw(gi, pass);
             gl.uniform2f(uniforms.u_dash, 0, 0);
+        };
+        const lit = !!split && run.some((gi) => split[gi]);
+        const passes: Pass[] = lit ? ['dimmed', 'bright'] : ['all'];
+        const setOpacity = (pass: Pass) => {
+            if (lit) gl.uniform1f(uniforms.u_opacity, pass === 'bright' ? opacities!.bright : opacities!.dimmed);
         };
         if (this.casing && meta?.casing !== false) {
             gl.uniform1f(uniforms.u_outset, style.width / 2 + style.casingWidth + aa);
             gl.uniform4fv(uniforms.u_override, this.casing);
-            for (const gi of run) {
+            for (const pass of passes) for (const gi of run) {
+                if (pass === 'bright' && !split![gi]) continue;
+                setOpacity(pass);
                 const look = mesh.groupLooks[gi];
                 // Dots with no color between them are cased dot by dot.
                 const dotted = !!look.dash && look.dash[0] === 0 && !look.dashColor;
-                const drawCasing = dotted ? () => drawDashes(gi, look) : () => draw(gi);
+                const drawCasing = dotted ? () => drawDashes(gi, look, pass) : () => draw(gi, pass);
                 if (once) {
                     // Full fragments set the mark, partial ones only test it.
                     gl.depthFunc(gl.LESS);
@@ -1102,21 +1169,24 @@ export class LaneLayer implements CustomLayerInterface {
         }
         if (once) gl.depthFunc(gl.ALWAYS);
         gl.uniform1f(uniforms.u_outset, style.width / 2 + aa);
-        for (const gi of run) {
+        const fillPasses: Pass[] = lit ? ['dimmed', 'bright'] : ['all'];
+        for (const pass of fillPasses) for (const gi of run) {
+            if (pass === 'bright' && !split![gi]) continue;
+            setOpacity(pass);
             const look = mesh.groupLooks[gi];
             const dash = look.dash;
             gl.uniform1f(uniforms.u_cap, look.dashCap === 'round' ? 1 : 0);
             if (dash && look.dashColor) {
                 gl.uniform4fv(uniforms.u_override, this.dashColor(look.dashColor));
-                draw(gi);
+                draw(gi, pass);
                 gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
-                drawDashes(gi, look);
+                drawDashes(gi, look, pass);
             } else if (dash) {
                 gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
-                drawDashes(gi, look);
+                drawDashes(gi, look, pass);
             } else {
                 gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
-                draw(gi);
+                draw(gi, pass);
             }
             if (once) {
                 // Clear the mark in the fill's shape; uncolored dash gaps still show casing.
@@ -1124,13 +1194,15 @@ export class LaneLayer implements CustomLayerInterface {
                 gl.depthMask(true);
                 gl.depthRange(DEPTH_CLEAR, DEPTH_CLEAR);
                 gl.uniform1f(uniforms.u_cover, COVER_HALF);
-                if (dash && !look.dashColor) drawDashes(gi, look);
-                else draw(gi);
+                if (dash && !look.dashColor) drawDashes(gi, look, pass);
+                else draw(gi, pass);
                 gl.uniform1f(uniforms.u_cover, COVER_ALL);
                 gl.depthMask(false);
                 gl.colorMask(true, true, true, true);
             }
         }
+        // The caller draws the next route at the dimmed opacity it set.
+        if (lit) gl.uniform1f(uniforms.u_opacity, opacities!.dimmed);
     }
 
 }

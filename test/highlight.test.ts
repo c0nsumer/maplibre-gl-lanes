@@ -8,7 +8,9 @@ import {describe, it, expect, vi} from 'vitest';
 import {readFileSync} from 'node:fs';
 import {buildLineGraph} from '../src/core/graph';
 import {orderLanes} from '../src/core/order';
+import {layoutAtZoom} from '../src/core/layout';
 import {LaneLayer, type LaneRenderArgs} from '../src/render/layer';
+import {tessellate, splitRanges, type Mesh, type Piece} from '../src/render/tessellate';
 
 const fc = JSON.parse(readFileSync(new URL('./fixtures/example.src.geojson', import.meta.url), 'utf8'));
 const graph = buildLineGraph(fc.features, {routeProperty: 'route_id', colorProperty: 'route_colour'});
@@ -17,7 +19,7 @@ const style = () => ({spacing: 8, width: 6, casingWidth: 1});
 
 /** Records every draw call with the uniforms that were set for it. */
 function recordingGl() {
-    const draws: {outset: number; opacity: number; first: number}[] = [];
+    const draws: {outset: number; opacity: number; first: number; count: number}[] = [];
     const uniforms: Record<string, number> = {};
     const names = new Map<object, string>();
     const gl = new Proxy({}, {
@@ -32,8 +34,8 @@ function recordingGl() {
             if (name === 'uniform1f') return (loc: object, v: number) => {
                 uniforms[names.get(loc) ?? '?'] = v;
             };
-            if (name === 'drawElements') return (_m: number, _c: number, _t: number, offset: number) => {
-                draws.push({outset: uniforms.u_outset, opacity: uniforms.u_opacity, first: offset / 4});
+            if (name === 'drawElements') return (_m: number, count: number, _t: number, offset: number) => {
+                draws.push({outset: uniforms.u_outset, opacity: uniforms.u_opacity, first: offset / 4, count});
             };
             return () => ({});
         },
@@ -65,7 +67,7 @@ function drawn(zoom: number, highlight: string | string[] | null, style2 = {}) {
     layer.onAdd(mapStub(zoom), gl);
     if (highlight !== null) layer.setHighlight(highlight, style2);
     layer.render(gl, args);
-    return {layer, draws};
+    return {layer, draws, gl};
 }
 
 describe('setHighlight', () => {
@@ -131,6 +133,118 @@ describe('setHighlight', () => {
         const widest = (ds: {outset: number}[]) => Math.max(...ds.map((d) => d.outset));
         expect(widest(near)).toBeCloseTo(widest(flat) + 12, 5);
         expect(widest(near) - widest(far)).toBeCloseTo(4, 5);
+    });
+});
+
+describe('mesh pieces', () => {
+    /** Every index of `range`, once each, covered by `pieces` in order. */
+    function tiles(range: [number, number], pieces: Piece[]): boolean {
+        let at = range[0];
+        for (const [first, count] of pieces) {
+            if (first !== at || count <= 0) return false;
+            at += count;
+        }
+        return at === range[0] + range[1];
+    }
+
+    it('cut every group, ribbon and dots, into ranges by edge that tile it exactly', () => {
+        // One route dotted on half its edges, so dot quads and two looks per route both occur.
+        const route = graph.edges[0].routes[0];
+        const laneStyle = (e: {id: number}, r: string) => (r === route && e.id % 2 === 0 ? {dash: [0, 2] as [number, number]} : null);
+        const layout = layoutAtZoom(graph, 16, style, {laneStyle});
+        const mesh = tessellate(layout.paths, {scale: layout.scale, origin: [0, 0], unitsPerMercator: 8192, drawOrder: layout.drawOrder, width: 6});
+        expect(mesh.groupPieces).toHaveLength(mesh.groups.length);
+        expect(mesh.groupDotPieces).toHaveLength(mesh.groups.length);
+        let dotted = 0;
+        for (let gi = 0; gi < mesh.groups.length; gi++) {
+            expect(tiles(mesh.groups[gi], mesh.groupPieces[gi])).toBe(true);
+            expect(tiles(mesh.groupDots[gi], mesh.groupDotPieces[gi])).toBe(true);
+            if (mesh.groupDots[gi][1]) dotted++;
+            for (const [, , edge] of [...mesh.groupPieces[gi], ...mesh.groupDotPieces[gi]]) {
+                expect(graph.edges[edge]).toBeDefined();
+                // The edge carries the group's route: a piece names its own edge, or the one a connector arrives from.
+                expect(graph.edges[edge].routes).toContain(mesh.groupRoutes[gi]);
+            }
+            // Neighbors on one edge are merged, so a piece boundary is an edge boundary.
+            const ps = mesh.groupPieces[gi];
+            for (let k = 1; k < ps.length; k++) expect(ps[k][2]).not.toBe(ps[k - 1][2]);
+        }
+        expect(dotted).toBeGreaterThan(0);
+    });
+});
+
+describe('splitRanges', () => {
+    const pieces: Piece[] = [[10, 6, 1], [16, 3, 2], [19, 9, 3], [28, 3, 2], [31, 6, 4]];
+    const group: [number, number] = [10, 27];
+
+    it('leaves the group whole when none of its edges is bright', () => {
+        expect(splitRanges(group, pieces, new Set([9]))).toEqual({dimmed: [[10, 27]], bright: []});
+        expect(splitRanges(group, pieces, new Set())).toEqual({dimmed: [[10, 27]], bright: []});
+    });
+
+    it('cuts the bright edges out and merges what stays on one side', () => {
+        expect(splitRanges(group, pieces, new Set([2]))).toEqual({dimmed: [[10, 6], [19, 9], [31, 6]], bright: [[16, 3], [28, 3]]});
+        expect(splitRanges(group, pieces, new Set([2, 3]))).toEqual({dimmed: [[10, 6], [31, 6]], bright: [[16, 15]]});
+        expect(splitRanges(group, pieces, new Set([1, 2, 3, 4]))).toEqual({dimmed: [], bright: [[10, 27]]});
+    });
+
+    it('treats an empty group as nothing to draw', () => {
+        expect(splitRanges([5, 0], [], new Set([1]))).toEqual({dimmed: [], bright: []});
+    });
+});
+
+describe('bright edges under a highlight', () => {
+    const meshOf = (layer: LaneLayer) => (layer as unknown as {mesh: Mesh}).mesh;
+    /** Index ranges drawn at an opacity, with the dimmed ones expanded to single indices. */
+    const covered = (draws: {opacity: number; first: number; count: number}[], opacity: number) => {
+        const out = new Set<number>();
+        for (const d of draws) if (d.opacity === opacity) for (let k = 0; k < d.count; k++) out.add(d.first + k);
+        return out;
+    };
+
+    /** A lifted route, and an edge that does not carry it, with its pieces on other routes. */
+    function scene() {
+        const lifted = [...graph.routes.keys()][0];
+        const edge = graph.edges.find((e) => !e.routes.includes(lifted) && e.routes.length > 0)!;
+        return {lifted, edge: edge.id};
+    }
+
+    it('draws the bright edge at full opacity in its route\'s own place, and never dimmed', () => {
+        const {lifted, edge} = scene();
+        const {layer, draws} = drawn(16, lifted, {dim: 0.4, bright: [edge]});
+        const mesh = meshOf(layer);
+        const brightIdx = new Set<number>();
+        for (let gi = 0; gi < mesh.groups.length; gi++) {
+            for (const [first, count, e] of mesh.groupPieces[gi]) if (e === edge) for (let k = 0; k < count; k++) brightIdx.add(first + k);
+        }
+        expect(brightIdx.size).toBeGreaterThan(0);
+        const dimmed = covered(draws, 0.4);
+        const full = covered(draws, 1);
+        for (const i of brightIdx) {
+            expect(dimmed.has(i)).toBe(false);
+            expect(full.has(i)).toBe(true);
+        }
+        // The bright draws sit among the dimmed ones, not after them with the lift.
+        const lastDimmed = draws.map((d) => d.opacity).lastIndexOf(0.4);
+        const firstBright = draws.findIndex((d) => d.opacity === 1 && brightIdx.has(d.first));
+        expect(firstBright).toBeGreaterThanOrEqual(0);
+        expect(firstBright).toBeLessThan(lastDimmed);
+        // No halo or outline: every full-opacity draw of a bright piece is a casing or a fill.
+        const {width, casingWidth} = style();
+        const outsets = new Set(draws.filter((d) => d.opacity === 1 && brightIdx.has(d.first)).map((d) => d.outset));
+        expect([...outsets].sort()).toEqual([width / 2 + 0.5, width / 2 + casingWidth + 0.5].sort());
+    });
+
+    it('changes nothing without a dim, without edges, or once the highlight is cleared', () => {
+        const {lifted, edge} = scene();
+        const plain = drawn(16, lifted, {dim: 0.4}).draws;
+        expect(drawn(16, lifted, {dim: 0.4, bright: []}).draws).toEqual(plain);
+        expect(drawn(16, lifted, {dim: 1, bright: [edge]}).draws).toEqual(drawn(16, lifted, {dim: 1}).draws);
+        const {layer, draws, gl} = drawn(16, lifted, {dim: 0.4, bright: [edge]});
+        layer.setHighlight(null);
+        draws.length = 0;
+        layer.render(gl, args);
+        expect(draws).toEqual(drawn(16, null).draws);
     });
 });
 

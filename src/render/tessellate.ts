@@ -26,6 +26,43 @@ export interface Mesh {
     groupLooks: LaneLook[];
     /** Per group, the index range of its dot quads, [start, 0] where it has none. */
     groupDots: [number, number][];
+    /**
+     * Per group, its index range cut by graph edge, in index order:
+     * [firstIndex, count, edge]. The pieces tile `groups[gi]` exactly, so
+     * a draw can leave some edges out, or draw them apart, without a seam
+     * in the dashes, whose phase is in the vertices.
+     */
+    groupPieces: Piece[][];
+    /** The same cut of `groupDots[gi]`; empty where the group has no dots. */
+    groupDotPieces: Piece[][];
+}
+
+/** An index range and the graph edge its triangles belong to: [firstIndex, count, edge]. */
+export type Piece = [number, number, number];
+
+/** Appends a piece, merged into the last one when it continues the same edge. */
+function addPiece(pieces: Piece[], first: number, count: number, edge: number): void {
+    if (count <= 0) return;
+    const last = pieces[pieces.length - 1];
+    if (last && last[2] === edge && last[0] + last[1] === first) last[1] += count;
+    else pieces.push([first, count, edge]);
+}
+
+/**
+ * A group's index range split by whether each piece's edge is in `bright`,
+ * with neighbors on the same side merged so each side is as few draws as it
+ * can be. Without a bright piece the whole range is dimmed, untouched.
+ */
+export function splitRanges(group: [number, number], pieces: Piece[], bright: ReadonlySet<number>): {dimmed: [number, number][]; bright: [number, number][]} {
+    if (!pieces.some((p) => bright.has(p[2]))) return {dimmed: group[1] ? [[group[0], group[1]]] : [], bright: []};
+    const out = {dimmed: [] as [number, number][], bright: [] as [number, number][]};
+    for (const [first, count, edge] of pieces) {
+        const side = bright.has(edge) ? out.bright : out.dimmed;
+        const last = side[side.length - 1];
+        if (last && last[0] + last[1] === first) last[1] += count;
+        else side.push([first, count]);
+    }
+    return out;
 }
 
 const MITER_LIMIT = 2;
@@ -256,6 +293,8 @@ export function tessellate(paths: LanePath[], opts: TessellateOptions): Mesh {
     const groupRoutes: string[] = [];
     const groupLooks: LaneLook[] = [];
     const groupDots: [number, number][] = [];
+    const groupPieces: Piece[][] = [];
+    const groupDotPieces: Piece[][] = [];
     // A group per look, since the dash is a uniform; a route's groups stay
     // adjacent so all its casings can draw before any fill.
     const byRoute = new Map<string, Map<LaneLook, LanePath[]>>();
@@ -274,19 +313,29 @@ export function tessellate(paths: LanePath[], opts: TessellateOptions): Mesh {
             const start = b.ni;
             let c = colorCache.get(look.color);
             if (!c) colorCache.set(look.color, (c = parseColor(look.color)));
+            const pieces: Piece[] = [];
             for (const p of list) {
+                const from = b.ni;
                 if (cache) cache.emit(b, p, c, opts);
                 else tessellatePath(b, p.coords, p.anchors, c, p.startDistance, opts);
+                addPiece(pieces, from, b.ni - from, p.edge);
             }
             if (b.ni > start) {
                 groups.push([start, b.ni - start]);
                 groupRoutes.push(rid);
                 groupLooks.push(look);
+                groupPieces.push(pieces);
                 const dots = b.ni;
+                const dotPieces: Piece[] = [];
                 if (opts.width && look.dash && look.dash[0] === 0 && look.dash[1] > 0) {
-                    for (const p of list) dotsOnPath(b, p.coords, p.anchors, c, p.startDistance, look.dash[1] * opts.width, opts);
+                    for (const p of list) {
+                        const from = b.ni;
+                        dotsOnPath(b, p.coords, p.anchors, c, p.startDistance, look.dash[1] * opts.width, opts);
+                        addPiece(dotPieces, from, b.ni - from, p.edge);
+                    }
                 }
                 groupDots.push([dots, b.ni - dots]);
+                groupDotPieces.push(dotPieces);
             }
         }
     }
@@ -300,6 +349,8 @@ export function tessellate(paths: LanePath[], opts: TessellateOptions): Mesh {
         groupRoutes,
         groupLooks,
         groupDots,
+        groupPieces,
+        groupDotPieces,
     };
 }
 

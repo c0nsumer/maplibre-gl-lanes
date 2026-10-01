@@ -7,7 +7,7 @@ import {fromTransfer, packPaths, pathTransferables, type GraphTransfer, type Pat
 import {LaneOrderer, type OrderOptions} from '../core/order.js';
 import {stabilizeLanes, type StabilizeOptions} from '../core/baselines.js';
 import {layoutAtZoom, LayoutCache, type LaneLook, type LaneStyle, type LaneSizes} from '../core/layout.js';
-import {tessellate, TessellateCache} from '../render/tessellate.js';
+import {tessellate, TessellateCache, type Piece} from '../render/tessellate.js';
 import type {GraphEdge, LaneAppearance, LineGraph} from '../core/graph.js';
 import type {Bounds} from '../core/geometry.js';
 
@@ -75,6 +75,8 @@ export interface LayoutResponse {
     groupRoutes: string[];
     groupLooks: LaneLook[];
     groupDots: [number, number][];
+    groupPieces: Piece[][];
+    groupDotPieces: Piece[][];
     layoutMs: number;
     meshMs: number;
     /** The worker restarted or evicted the session: send the graph again. */
@@ -197,6 +199,8 @@ export function handleLayoutRequest(req: LayoutRequest): LayoutResponse {
         groupRoutes: mesh.groupRoutes,
         groupLooks: mesh.groupLooks,
         groupDots: mesh.groupDots,
+        groupPieces: mesh.groupPieces,
+        groupDotPieces: mesh.groupDotPieces,
         layoutMs: t1 - t0,
         meshMs: t2 - t1,
     };
@@ -206,6 +210,7 @@ const EMPTY_MESH = {
     vertices: new Float32Array(0), colors: new Uint8Array(0), indices: new Uint32Array(0),
     vertexCount: 0, indexCount: 0, groups: [] as [number, number][], groupRoutes: [] as string[],
     groupLooks: [] as LaneLook[], groupDots: [] as [number, number][],
+    groupPieces: [] as Piece[][], groupDotPieces: [] as Piece[][],
 };
 
 function emptyLayout(req: LayoutRequest): LayoutResponse {
@@ -215,7 +220,8 @@ function emptyLayout(req: LayoutRequest): LayoutResponse {
         stats: {edges: 0, edgesBuilt: 0, edgesMerged: 0, nodes: 0, vertices: 0, ms: 0},
         paths: packPaths([]),
         vertices: new Float32Array(0), colors: new Uint8Array(0), indices: new Uint32Array(0),
-        vertexCount: 0, indexCount: 0, groups: [], groupRoutes: [], groupLooks: [], groupDots: [], layoutMs: 0, meshMs: 0,
+        vertexCount: 0, indexCount: 0, groups: [], groupRoutes: [], groupLooks: [], groupDots: [], groupPieces: [], groupDotPieces: [],
+        layoutMs: 0, meshMs: 0,
     };
 }
 

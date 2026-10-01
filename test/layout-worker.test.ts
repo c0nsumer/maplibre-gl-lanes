@@ -109,6 +109,7 @@ describe('layout in the worker', () => {
         expect(res.mergedEdges).toEqual(layout.mergedEdges);
         expect(res.vertexCount).toBe(mesh.vertexCount);
         expect(res.groups).toEqual(mesh.groups);
+        expect(res.groupPieces).toEqual(mesh.groupPieces);
         expect([...res.vertices]).toEqual([...mesh.vertices]);
         expect([...res.indices]).toEqual([...mesh.indices]);
         const paths = unpackPaths(res.paths);
