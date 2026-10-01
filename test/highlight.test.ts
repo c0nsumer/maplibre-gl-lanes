@@ -110,6 +110,13 @@ describe('setHighlight', () => {
         expect(outsets.slice(3, 6)).toEqual([outline, outline, outline]);
     });
 
+    it('dims every route in view though no highlighted route is in the build', () => {
+        // A route panned out of view is missing from the build the same way.
+        const {draws} = drawn(16, 'not-in-this-build', {dim: 0.4});
+        expect(draws.length).toBeGreaterThan(0);
+        expect(draws.every((d) => d.opacity === 0.4)).toBe(true);
+    });
+
     it('reaches as far as the documented formula says', () => {
         // What HighlightStyle.haloWidth promises: a caller compares this
         // with the lane pitch to know whether a halo covers its neighbors.

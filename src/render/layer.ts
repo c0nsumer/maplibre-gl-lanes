@@ -1016,7 +1016,8 @@ export class LaneLayer implements CustomLayerInterface {
                 for (const gi of run) lifted.add(gi);
             }
         }
-        const dimmed = !!hl && liftedRuns.length > 0;
+        // The dim follows the highlight, not the lifted route's presence in this build.
+        const dimmed = !!hl && hl.dim < 1;
         // Only a casing that lets the map through needs blending once.
         const once = this.canMark && !!this.casing && (this.casing[3] < 1 || this.opacity < 1 || (dimmed && hl!.dim < 1));
         if (once) {

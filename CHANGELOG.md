@@ -13,6 +13,12 @@ follows Keep a Changelog, and the project uses semantic versioning.
   and keep their place in the drawing order. A translucent casing stays
   blended once where a bright lane meets a dimmed piece of its own route.
 
+### Fixed
+
+- A highlight's `dim` now applies wherever the map is. Before, it stopped
+  when no highlighted route was in the area last built, such as after
+  panning away from the route.
+
 ## 1.1.0 - 2026-09-30
 
 ### Changed
