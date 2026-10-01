@@ -1,6 +1,6 @@
 {
   "name": "maplibre-gl-lanes",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Draws routes that share paths as ordered parallel lanes in MapLibre GL JS: a transit-map look for any route network, with crossing minimization, smooth junctions, and constant pixel spacing at every zoom.",
   "repository": {
     "type": "git",

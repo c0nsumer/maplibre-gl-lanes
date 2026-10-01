@@ -6,7 +6,7 @@ authors:
   - family-names: Vigneau
     given-names: Steve
 license: MIT
-version: 1.1.0
+version: 1.2.0
 date-released: "2026-09-30"
 repository-code: "https://github.com/c0nsumer/maplibre-gl-lanes"
 abstract: "A MapLibre GL JS plugin that draws routes sharing paths as ordered parallel lanes, with LOOM-style crossing minimization, smooth junctions, and constant pixel spacing at every zoom."
