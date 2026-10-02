@@ -99,6 +99,15 @@ describe('the inside of a hairpin narrower than a pixel', () => {
         expect(farthestFromAnchor(lane.points, lane.anchors)).toBeLessThanOrEqual(8 * 1.5);
     });
 
+    // A loop cut 98 px along a segment used to take the segment start as its
+    // anchor; the mesh keeps that offset between rebuilds, which slid the
+    // vertex off the lane as the map zoomed.
+    it('anchors the point where a loop is cut to the ground under it', () => {
+        const kink: Polyline = [0, 0, 100, 0, 100.3, 0.001, 100.31, 0.4, 100, 10, 100, 60];
+        const lane = offsetPolylineAnchored(kink, -1.5);
+        expect(farthestFromAnchor(lane.points, lane.anchors)).toBeLessThan(2);
+    });
+
     // Roller Coaster in MFO at zoom 10.5: sub-meter twists in the trail put
     // a lane vertex over 200 px west of the bundle, a spike off the screen.
     it('puts no MFO lane vertex far from its ground point', () => {

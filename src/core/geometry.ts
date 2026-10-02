@@ -427,7 +427,7 @@ export function removeLoopsAnchored(p: Polyline, anchors: Polyline, window: numb
         // Segment lengths once per pass: the window scan reads each many times.
         const len = new Float64Array(Math.max(0, n - 1));
         for (let k = 0; k < n - 1; k++) len[k] = Math.hypot(pts[k * 2 + 2] - pts[k * 2], pts[k * 2 + 3] - pts[k * 2 + 1]);
-        let found: {i: number; j: number; x: number; y: number} | null = null;
+        let found: {i: number; j: number; x: number; y: number; t: number} | null = null;
         outer: for (let i = 0; i < n - 1 && !found; i++) {
             const ax = pts[i * 2], ay = pts[i * 2 + 1], bx = pts[i * 2 + 2], by = pts[i * 2 + 3];
             const minX = ax < bx ? ax : bx, maxX = ax < bx ? bx : ax;
@@ -441,7 +441,7 @@ export function removeLoopsAnchored(p: Polyline, anchors: Polyline, window: numb
                 if ((cx < minX && dx < minX) || (cx > maxX && dx > maxX) || (cy < minY && dy < minY) || (cy > maxY && dy > maxY)) continue;
                 const hit = intersectSegments(ax, ay, bx, by, cx, cy, dx, dy);
                 if (hit) {
-                    found = {i, j, x: hit.x, y: hit.y};
+                    found = {i, j, x: hit.x, y: hit.y, t: hit.t};
                     break outer;
                 }
             }
@@ -450,7 +450,10 @@ export function removeLoopsAnchored(p: Polyline, anchors: Polyline, window: numb
         const cut = (found.i + 1) * 2;
         const keep = (found.j + 1) * 2;
         pts = pts.slice(0, cut).concat([found.x, found.y], pts.slice(keep));
-        anc = anc.slice(0, cut).concat([anc[found.i * 2], anc[found.i * 2 + 1]], anc.slice(keep));
+        // The cut point takes the ground under it, not its segment's start: the mesh holds
+        // each vertex's offset from its anchor between rebuilds, so a far anchor slides it off the lane.
+        const ai = found.i * 2, t = found.t;
+        anc = anc.slice(0, cut).concat([anc[ai] + (anc[ai + 2] - anc[ai]) * t, anc[ai + 1] + (anc[ai + 3] - anc[ai + 1]) * t], anc.slice(keep));
     }
     return {points: pts, anchors: anc};
 }
