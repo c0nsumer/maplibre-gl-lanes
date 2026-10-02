@@ -248,3 +248,30 @@ describe('what else needs the casing blended once', () => {
         for (const d of draws) expect(d).toMatchObject(underLayersAbove);
     });
 });
+
+describe('the layer depth', () => {
+    // Reading DEPTH_RANGE is a round trip to the GPU process that blocks the frame.
+    it('is read again only when the layer moves in the style', () => {
+        const layer = new LaneLayer({id: 'lanes', graph, sizes: style, worker: false});
+        const rec = recordingGl();
+        let reads = 0;
+        const gl = new Proxy(rec.gl as unknown as Record<string, unknown>, {
+            get: (target, name: string) => name === 'getParameter'
+                ? (p: number) => {
+                    if (p === GL.DEPTH_RANGE) reads++;
+                    return (target.getParameter as (p: number) => unknown)(p);
+                }
+                : target[name],
+        }) as unknown as WebGL2RenderingContext;
+        let order = ['background', 'lanes'];
+        layer.onAdd({...mapStub, getLayersOrder: () => order}, gl);
+        layer.render(gl, args);
+        layer.render(gl, args);
+        layer.render(gl, args);
+        expect(reads).toBe(1);
+        order = ['background', 'water', 'lanes'];
+        layer.render(gl, args);
+        layer.render(gl, args);
+        expect(reads).toBe(2);
+    });
+});

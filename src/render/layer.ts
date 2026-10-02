@@ -161,6 +161,8 @@ interface Composite {
 interface OffscreenShare {
     users: number;
     target: Offscreen | null;
+    /** Drops the target and program when the context is lost, so the frame needs no query for it. */
+    onLost: () => void;
     /** Null once it failed to build, so it is not tried every frame. */
     composite: Composite | null | undefined;
 }
@@ -318,6 +320,8 @@ export interface LaneMap {
     getTerrain(): unknown;
     getBounds(): {getWest(): number; getSouth(): number; getEast(): number; getNorth(): number};
     unproject(point: [number, number] | {x: number; y: number}): {lng: number; lat: number};
+    /** Both versions have it; optional so a stub without it still fits. */
+    getLayersOrder?(): string[];
 }
 
 export interface LaneHit {
@@ -400,6 +404,8 @@ export class LaneLayer implements CustomLayerInterface {
     private timings = {layoutMs: 0, meshMs: 0, renderThreadMs: 0};
     /** The depth MapLibre gave this layer for the frame being drawn. */
     private depthBase = 1 - DEPTH_GAP;
+    /** The layer's index in the style when `depthBase` was read, or -1. */
+    private depthPlace = -1;
 
     constructor(opts: LaneLayerOptions) {
         this.id = opts.id;
@@ -766,7 +772,14 @@ export class LaneLayer implements CustomLayerInterface {
         this.gl = gl;
         const share = offscreens.get(gl);
         if (share) share.users++;
-        else offscreens.set(gl, {users: 1, target: null, composite: undefined});
+        else {
+            const made: OffscreenShare = {users: 1, target: null, composite: undefined, onLost: () => {
+                made.target = null;
+                made.composite = undefined;
+            }};
+            offscreens.set(gl, made);
+            (gl.canvas as HTMLCanvasElement).addEventListener?.('webglcontextlost', made.onLost);
+        }
         if (map.getTerrain()) {
             console.warn('maplibre-gl-lanes: 3D terrain is enabled; lanes are drawn at ' +
                 'sea level and will be hidden under raised terrain.');
@@ -799,6 +812,7 @@ export class LaneLayer implements CustomLayerInterface {
                 gl.deleteProgram(share.composite.program);
                 gl.deleteVertexArray(share.composite.vao);
             }
+            (gl.canvas as HTMLCanvasElement).removeEventListener?.('webglcontextlost', share.onLost);
             offscreens.delete(gl);
         }
         this.layoutCache.clear();
@@ -1079,9 +1093,15 @@ export class LaneLayer implements CustomLayerInterface {
         gl.uniform1f(uniforms.u_blur, 1 / dpr);
         gl.uniform1f(uniforms.u_opacity, this.opacity);
         gl.uniform1f(uniforms.u_cover, COVER_ALL);
-        // Every draw is set out from the depth MapLibre gave this layer, and restored to it.
-        const range = gl.getParameter(gl.DEPTH_RANGE) as Float32Array | null;
-        this.depthBase = range ? range[0] : 1 - DEPTH_GAP;
+        // Every draw is set out from the depth MapLibre gave this layer, and restored to it. That
+        // depth follows from the layer's place in the style alone, and reading it is a round trip
+        // to the GPU process, so it is read again only when the place changes.
+        const place = this.map.getLayersOrder ? this.map.getLayersOrder().indexOf(this.id) : -1;
+        if (place < 0 || place !== this.depthPlace) {
+            const range = gl.getParameter(gl.DEPTH_RANGE) as Float32Array | null;
+            this.depthBase = range ? range[0] : 1 - DEPTH_GAP;
+            this.depthPlace = place;
+        }
         this.depthAt(gl, 0);
         gl.enable(gl.DEPTH_TEST);
         gl.depthFunc(gl.LEQUAL);
@@ -1180,6 +1200,8 @@ export class LaneLayer implements CustomLayerInterface {
             for (const run of liftedRuns) this.drawRoute(gl, uniforms, run, style, dashStyle, aa, once, marks, this.opacity);
         }
         if (offscreen) {
+            // The marks are cleared next frame anyway: a tiled GPU need not write them out.
+            gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.DEPTH_ATTACHMENT]);
             // Laid on the map once, at the layer's depth, under whatever MapLibre drew nearer.
             gl.bindFramebuffer(gl.FRAMEBUFFER, mapFramebuffer);
             gl.useProgram(offscreen.composite.program);
@@ -1412,8 +1434,7 @@ function acquireOffscreen(gl: WebGL2RenderingContext): {target: Offscreen; compo
     if (!share) return null;
     const width = gl.drawingBufferWidth, height = gl.drawingBufferHeight;
     let target = share.target;
-    // A lost context takes its objects with it; `isFramebuffer` says so once it is back.
-    const stale = target && (target.width !== width || target.height !== height || !gl.isFramebuffer(target.framebuffer));
+    const stale = target && (target.width !== width || target.height !== height);
     if (target && stale) {
         releaseOffscreen(gl, target);
         target = share.target = null;
