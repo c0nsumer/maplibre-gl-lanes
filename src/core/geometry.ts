@@ -550,9 +550,10 @@ export function smoothCatmullRom(p: Polyline, segmentPx: number, maxPerSegment =
         const p3x = i + 2 < n ? X(i + 2) : 2 * X(n - 1) - X(n - 2);
         const p3y = i + 2 < n ? Y(i + 2) : 2 * Y(n - 1) - Y(n - 2);
         const t0 = 0;
-        const t1 = t0 + Math.sqrt(Math.hypot(p1x - p0x, p1y - p0y)) || 1e-6;
-        const t2 = t1 + Math.sqrt(Math.hypot(p2x - p1x, p2y - p1y)) || t1 + 1e-6;
-        const t3 = t2 + Math.sqrt(Math.hypot(p3x - p2x, p3y - p2y)) || t2 + 1e-6;
+        // Each knot step is kept above zero: a repeated point would divide by zero below.
+        const t1 = t0 + (Math.sqrt(Math.hypot(p1x - p0x, p1y - p0y)) || 1e-6);
+        const t2 = t1 + (Math.sqrt(Math.hypot(p2x - p1x, p2y - p1y)) || 1e-6);
+        const t3 = t2 + (Math.sqrt(Math.hypot(p3x - p2x, p3y - p2y)) || 1e-6);
         for (let s = 1; s < steps; s++) {
             const t = t1 + ((t2 - t1) * s) / steps;
             const a1x = ((t1 - t) / (t1 - t0)) * p0x + ((t - t0) / (t1 - t0)) * p1x;
@@ -700,9 +701,10 @@ function bendAt(p: Polyline, k: number): number {
 /** Must match the arithmetic in `smoothCatmullRom`. */
 function centripetalPoint(p0x: number, p0y: number, p1x: number, p1y: number, p2x: number, p2y: number, p3x: number, p3y: number, u: number): Vec {
     const t0 = 0;
-    const t1 = t0 + Math.sqrt(Math.hypot(p1x - p0x, p1y - p0y)) || 1e-6;
-    const t2 = t1 + Math.sqrt(Math.hypot(p2x - p1x, p2y - p1y)) || t1 + 1e-6;
-    const t3 = t2 + Math.sqrt(Math.hypot(p3x - p2x, p3y - p2y)) || t2 + 1e-6;
+    // Each knot step is kept above zero: a repeated point would divide by zero below.
+    const t1 = t0 + (Math.sqrt(Math.hypot(p1x - p0x, p1y - p0y)) || 1e-6);
+    const t2 = t1 + (Math.sqrt(Math.hypot(p2x - p1x, p2y - p1y)) || 1e-6);
+    const t3 = t2 + (Math.sqrt(Math.hypot(p3x - p2x, p3y - p2y)) || 1e-6);
     const t = t1 + (t2 - t1) * u;
     const a1x = ((t1 - t) / (t1 - t0)) * p0x + ((t - t0) / (t1 - t0)) * p1x;
     const a1y = ((t1 - t) / (t1 - t0)) * p0y + ((t - t0) / (t1 - t0)) * p1y;

@@ -132,6 +132,7 @@ describe('geometry primitives', () => {
         fin('slide zero total', offsetPolylineSlidingAnchored([0, 0, 1e-12, 0], 3, -3).points);
         fin('smooth back', smoothCatmullRom([0, 0, 10, 0, 0, 0], 5, 10, 3, 60, 12));
         fin('smooth dup', smoothCatmullRom([0, 0, 0, 0, 10, 0, 10, 0, 10, 10], 5, 10, 3, 60, 12));
+        fin('smooth dup inside', smoothCatmullRom([0, 0, 10, 0, 20, 5, 20, 5, 30, 0], 1));
         fin('trim zero', trimPolyline([0, 0, 0, 0], 3, 3));
         fin('trim big', trimPolyline([0, 0, 10, 0], 30, 30));
         fin('folds back', openFolds([0, 0, 100, 0, 0, 0], 12, 0, 0));
