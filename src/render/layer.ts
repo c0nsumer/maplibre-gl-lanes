@@ -109,17 +109,26 @@ void main() {
 }`;
 
 /**
+ * MapLibre hands a 2D custom layer a read-only depth test at the layer's own
+ * depth, its `depthEpsilon` (1/2^16) farther than the nearest depth of the
+ * layer below. Every draw here tests at that depth, so an opaque fill above
+ * this layer, which MapLibre draws first, covers the lanes.
+ */
+const DEPTH_GAP = 1 / (1 << 16);
+/**
  * A translucent casing is blended once through a per-pixel "casing showing"
  * mark that a casing sets and tests and a fill clears (docs/algorithms.md,
  * Rendering). The mark lives in the depth buffer, never the stencil buffer:
- * MapLibre reuses its tile clipping masks there across layers. Both values
- * sit at or beyond MapLibre's farthest layer depth, so later layers pass
- * over them. Clearing writes a farther value over a nearer one, so the
- * depth of opaque fills above this layer is lost under the lanes. Only full
+ * MapLibre reuses its tile clipping masks there across layers. Its values
+ * sit in the gap behind this layer's depth, nearer than any layer below and
+ * farther than any above, offsets from the layer's depth in units of the
+ * gap. Clearing writes a farther value over a nearer one, which no depth
+ * test can keep off an opaque fill above, so where one route's lanes cross
+ * another's under such a fill, the later one shows through. Only full
  * coverage sets the mark; marking soft edges leaves pale threads.
  */
-const DEPTH_CLEAR = 1;
-const DEPTH_MARK = 1 - 1 / (1 << 17);
+const DEPTH_CLEAR = 4 / 8;
+const DEPTH_MARK = 3 / 8;
 /**
  * A translucent fill paints each pixel once per route the same way: its
  * pieces overlap at every joint, in their round caps and joins, and would
@@ -127,8 +136,8 @@ const DEPTH_MARK = 1 - 1 / (1 << 17);
  * own casing; the soft edges of dashes are nearer still, to go over the
  * dash color around them.
  */
-const DEPTH_FILL = 1 - 2 / (1 << 17);
-const DEPTH_FILL_OVER = 1 - 3 / (1 << 17);
+const DEPTH_FILL = 2 / 8;
+const DEPTH_FILL_OVER = 1 / 8;
 /** Two depth values a hair apart need more than the 16 bits some buffers have. */
 const MIN_DEPTH_BITS = 24;
 /** Values of `u_cover`: which fragments a draw keeps, by pixel coverage. */
@@ -350,6 +359,8 @@ export class LaneLayer implements CustomLayerInterface {
     /** Each group's bright split, kept until the mesh or the highlight changes. */
     private brightSplit: {mesh: Mesh; style: ResolvedHighlight; groups: (RunSplit | null)[]} | null = null;
     private timings = {layoutMs: 0, meshMs: 0, renderThreadMs: 0};
+    /** The depth MapLibre gave this layer for the frame being drawn. */
+    private depthBase = 1 - DEPTH_GAP;
 
     constructor(opts: LaneLayerOptions) {
         this.id = opts.id;
@@ -1018,7 +1029,13 @@ export class LaneLayer implements CustomLayerInterface {
         gl.uniform1f(uniforms.u_blur, 1 / dpr);
         gl.uniform1f(uniforms.u_opacity, this.opacity);
         gl.uniform1f(uniforms.u_cover, COVER_ALL);
-        gl.disable(gl.DEPTH_TEST);
+        // Every draw is set out from the depth MapLibre gave this layer, and restored to it.
+        const range = gl.getParameter(gl.DEPTH_RANGE) as Float32Array | null;
+        this.depthBase = range ? range[0] : 1 - DEPTH_GAP;
+        this.depthAt(gl, 0);
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthFunc(gl.LEQUAL);
+        gl.depthMask(false);
         gl.disable(gl.STENCIL_TEST);
         gl.disable(gl.CULL_FACE);
         gl.enable(gl.BLEND);
@@ -1057,17 +1074,16 @@ export class LaneLayer implements CustomLayerInterface {
         const once = this.canMark && !!this.casing && (this.casing[3] < 1 || translucent);
         const marks = once || (this.canMark && translucent);
         if (marks) {
-            // Assume nothing about incoming depth: clear under every casing pixel.
-            gl.enable(gl.DEPTH_TEST);
-            gl.depthFunc(gl.ALWAYS);
+            // Clear under every casing pixel, except where a layer above is nearer.
             gl.depthMask(true);
-            gl.depthRange(DEPTH_CLEAR, DEPTH_CLEAR);
+            this.depthAt(gl, DEPTH_CLEAR);
             gl.colorMask(false, false, false, false);
             gl.uniform1f(uniforms.u_outset, style.width / 2 + style.casingWidth + aa);
             gl.uniform4fv(uniforms.u_override, this.casing ?? [0, 0, 0, 1]);
             gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0);
             gl.colorMask(true, true, true, true);
             gl.depthMask(false);
+            this.depthAt(gl, 0);
         }
         const split = dimmed && hl!.bright.size > 0 ? this.splitFor(mesh, hl!) : null;
         const restOpacity = dimmed ? this.opacity * hl!.dim : this.opacity;
@@ -1080,35 +1096,47 @@ export class LaneLayer implements CustomLayerInterface {
             gl.uniform1f(uniforms.u_opacity, this.opacity);
             const outlineEdge = style.width / 2 + style.casingWidth + widthAt(hl.outlineWidth, zoom);
             // Every halo, then every outline, then the lanes, or one route's
-            // halo would wash over the next lifted lane. Both clear the mark.
-            if (once && (hl.halo || hl.outline)) {
+            // halo would wash over the next lifted lane. Both clear the mark,
+            // in a second draw without color, so the color stays under a layer above.
+            const lift = () => {
+                for (const gi of lifted) gl.drawElements(gl.TRIANGLES, mesh.groups[gi][1], gl.UNSIGNED_INT, mesh.groups[gi][0] * 4);
+                if (!once) return;
                 gl.depthFunc(gl.ALWAYS);
                 gl.depthMask(true);
-                gl.depthRange(DEPTH_CLEAR, DEPTH_CLEAR);
-            }
+                this.depthAt(gl, DEPTH_CLEAR);
+                gl.colorMask(false, false, false, false);
+                for (const gi of lifted) gl.drawElements(gl.TRIANGLES, mesh.groups[gi][1], gl.UNSIGNED_INT, mesh.groups[gi][0] * 4);
+                gl.colorMask(true, true, true, true);
+                gl.depthMask(false);
+                gl.depthFunc(gl.LEQUAL);
+                this.depthAt(gl, 0);
+            };
             if (hl.halo) {
                 // The blur spans the fade, so the opaque core never doubles on overlap.
                 gl.uniform1f(uniforms.u_blur, Math.max(1 / dpr, widthAt(hl.haloBlur, zoom)));
                 gl.uniform1f(uniforms.u_outset, outlineEdge + widthAt(hl.haloWidth, zoom) + aa);
                 gl.uniform4fv(uniforms.u_override, hl.halo);
-                for (const gi of lifted) gl.drawElements(gl.TRIANGLES, mesh.groups[gi][1], gl.UNSIGNED_INT, mesh.groups[gi][0] * 4);
+                lift();
                 gl.uniform1f(uniforms.u_blur, 1 / dpr);
             }
             if (hl.outline) {
                 gl.uniform1f(uniforms.u_outset, outlineEdge + aa);
                 gl.uniform4fv(uniforms.u_override, hl.outline);
-                for (const gi of lifted) gl.drawElements(gl.TRIANGLES, mesh.groups[gi][1], gl.UNSIGNED_INT, mesh.groups[gi][0] * 4);
+                lift();
             }
-            if (once) gl.depthMask(false);
             for (const run of liftedRuns) this.drawRoute(gl, uniforms, run, style, dashStyle, aa, once, marks, this.opacity);
         }
-        if (marks) {
-            // The next layer may be another custom layer, which MapLibre does not reset for.
-            gl.disable(gl.DEPTH_TEST);
-            gl.depthFunc(gl.LEQUAL);
-            gl.depthRange(0, 1);
-        }
+        // As MapLibre set it, since the next layer may be another custom layer.
+        gl.depthFunc(gl.LEQUAL);
+        gl.depthMask(false);
+        gl.depthRange(this.depthBase, this.depthBase);
         gl.bindVertexArray(null);
+    }
+
+    /** Draw at an offset behind this layer's depth, in units of the gap (see `DEPTH_GAP`). */
+    private depthAt(gl: WebGL2RenderingContext, offset: number): void {
+        const d = this.depthBase + offset * DEPTH_GAP;
+        gl.depthRange(d, d);
     }
 
     /** The bright split of every group, worked out once per mesh and highlight. */
@@ -1198,7 +1226,7 @@ export class LaneLayer implements CustomLayerInterface {
                 if (once) {
                     // Full fragments set the mark, partial ones only test it.
                     gl.depthFunc(gl.LESS);
-                    gl.depthRange(DEPTH_MARK, DEPTH_MARK);
+                    this.depthAt(gl, DEPTH_MARK);
                     gl.depthMask(true);
                     gl.uniform1f(uniforms.u_cover, COVER_FULL);
                     drawCasing();
@@ -1211,7 +1239,10 @@ export class LaneLayer implements CustomLayerInterface {
                 }
             }
         }
-        if (once) gl.depthFunc(gl.ALWAYS);
+        if (once) {
+            gl.depthFunc(gl.LEQUAL);
+            this.depthAt(gl, 0);
+        }
         gl.uniform1f(uniforms.u_outset, style.width / 2 + aa);
         const fillPasses: Pass[] = lit ? ['dimmed', 'bright'] : ['all'];
         for (const pass of fillPasses) {
@@ -1224,7 +1255,7 @@ export class LaneLayer implements CustomLayerInterface {
                     return;
                 }
                 gl.depthFunc(gl.LESS);
-                gl.depthRange(depth, depth);
+                this.depthAt(gl, depth);
                 gl.depthMask(true);
                 gl.uniform1f(uniforms.u_cover, COVER_FULL);
                 paint();
@@ -1242,14 +1273,14 @@ export class LaneLayer implements CustomLayerInterface {
                     // The dashes claim their pixels before the dash color, which
                     // would show through them; their soft edges go over it after.
                     gl.depthFunc(gl.LESS);
-                    gl.depthRange(DEPTH_FILL, DEPTH_FILL);
+                    this.depthAt(gl, DEPTH_FILL);
                     gl.depthMask(true);
                     gl.uniform1f(uniforms.u_cover, COVER_FULL);
                     gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
                     drawDashes(gi, look, pass);
                     gl.uniform4fv(uniforms.u_override, this.dashColor(look.dashColor));
                     fill(() => draw(gi, pass), DEPTH_FILL);
-                    gl.depthRange(DEPTH_FILL_OVER, DEPTH_FILL_OVER);
+                    this.depthAt(gl, DEPTH_FILL_OVER);
                     gl.uniform1f(uniforms.u_cover, COVER_PARTIAL);
                     gl.uniform4f(uniforms.u_override, 0, 0, 0, -1);
                     drawDashes(gi, look, pass);
@@ -1272,7 +1303,7 @@ export class LaneLayer implements CustomLayerInterface {
                 gl.depthFunc(gl.ALWAYS);
                 gl.colorMask(false, false, false, false);
                 gl.depthMask(true);
-                gl.depthRange(DEPTH_CLEAR, DEPTH_CLEAR);
+                this.depthAt(gl, DEPTH_CLEAR);
                 gl.uniform1f(uniforms.u_cover, COVER_HALF);
                 for (const gi of groups) {
                     const look = mesh.groupLooks[gi];
@@ -1282,6 +1313,8 @@ export class LaneLayer implements CustomLayerInterface {
                 gl.uniform1f(uniforms.u_cover, COVER_ALL);
                 gl.depthMask(false);
                 gl.colorMask(true, true, true, true);
+                gl.depthFunc(gl.LEQUAL);
+                this.depthAt(gl, 0);
             }
         }
         // The caller draws the next route at the dimmed opacity it set.

@@ -244,8 +244,10 @@ in the fragment shader. Three additions:
   that says a casing is showing. A casing draws only where the mark is not
   set, and sets it. A fill clears it, because a later lane's casing does
   belong over an earlier lane's fill where the two cross. The mark is a
-  depth value at the far plane, which every later MapLibre layer passes
-  over. It is not in the stencil buffer, where MapLibre keeps tile clipping
+  depth value just behind the depth MapLibre gives the layer, nearer than
+  any layer below. Every later MapLibre layer passes over it, and every
+  draw is tested against the layers above, so an opaque one covers the
+  lanes. It is not in the stencil buffer, where MapLibre keeps tile clipping
   masks that a custom layer has no way to invalidate.
 - A translucent fill is blended once per pixel too. A route's pieces
   overlap at every joint, in their round caps and joins, so a dimmed lane
