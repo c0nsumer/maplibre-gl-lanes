@@ -175,6 +175,9 @@ for (const zoom of [15, 16]) {
 {
     const centers = panPath(15.5);
     const zooms = (i: number) => 15.5 + 0.1 * (i % 11) - 0.5;
-    pan(zooms, centers.slice(0, 8));
+    // Whole passes, so both modes reach the measured pass equally warm: an uncached run
+    // has already laid out hundreds of pans by now, a cached one mostly reused them.
+    pan(zooms, centers);
+    pan(zooms, centers);
     report('pinch z15..16', pan(zooms, centers));
 }

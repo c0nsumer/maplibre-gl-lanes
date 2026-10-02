@@ -135,14 +135,14 @@ build per rebuild, in Node.js on the desktop machine:
 
 | Pan | Rebuilds | Total, no cache | Total, cached | Median, no cache | Median, cached |
 |---|---|---|---|---|---|
-| At z15 | 92 | 571 ms | 120 ms | 5.1 ms | 0.5 ms |
-| At z16 | 360 | 1020 ms | 89 ms | 2.6 ms | 0.1 ms |
-| Zooming from z15 to z16 while panning | 143 | 585 ms | 679 ms | 3.3 ms | 3.8 ms |
+| At z15 | 92 | 664 ms | 122 ms | 6.1 ms | 0.5 ms |
+| At z16 | 360 | 1065 ms | 96 ms | 2.7 ms | 0.1 ms |
+| Zooming from z15 to z16 while panning | 143 | 531 ms | 528 ms | 3.1 ms | 3.1 ms |
 
 "No cache" rebuilds everything on every pan, which is what the layer did
 before it kept its per-zoom work (`--no-cache` on the benchmark). At z15
-the cache takes the worst rebuild of the pan from 19 ms to 9 ms, and the
-90th percentile from 11 ms to 4 ms.
+the cache takes the worst rebuild of the pan from 19 ms to 10 ms, and the
+90th percentile from 13 ms to 4 ms.
 
 The third row moves the zoom as it pans, so almost every rebuild starts
 a new zoom and the cache has nothing to give it. A caller that lays out
@@ -152,9 +152,8 @@ per-zoom work covers every edge rather than the ones in view: it decides
 which edges merge and where the fronts sit, which needs them all. Its
 cost is the difference between this row and the culled builds of the
 layout table. Opening fold backs is part of the per-zoom work and adds
-nothing measurable to any row. The cached run of this row costs more than
-the uncached one because the caches are filled for a zoom that is never
-asked for again.
+nothing measurable to any row. The cached run of this row costs the same
+as the uncached one.
 
 A dashed route adds to the first build at a zoom. Its dash phase is read
 off every piece of the route, in view or not, so that the phase does not
