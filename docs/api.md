@@ -586,9 +586,11 @@ zoom, the sizes, `smooth`, `openFolds` or the style callback changes. `clear()` 
 everything it holds.
 
 One cache belongs to one sequence of builds. The layouts it produces share
-their `LanePath` objects, and every build rewrites `startDistance` on them
-to keep the dash phase continuous. Do not drive two independent layouts of
-one graph from a single cache.
+their `LanePath` objects. A dashed route's `startDistance` is set once per
+zoom, from every piece of the route, in view or not. So the dash phase does
+not move with the viewport, and it is continuous at every seam a route can
+make continuous. Do not drive two independent layouts of one graph from a
+single cache.
 
 ### `Layout`
 

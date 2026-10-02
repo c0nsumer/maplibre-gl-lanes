@@ -4,7 +4,7 @@
  * lane that ends where other routes pass through runs to the node instead (see `drawOrder`).
  */
 
-import type {GraphEdge, GraphNode, LaneAppearance, LineGraph, RouteStep} from './graph.js';
+import type {GraphEdge, GraphNode, LaneAppearance, LineGraph} from './graph.js';
 import {openFolds} from './folds.js';
 import {restack} from './stacking.js';
 import {
@@ -156,8 +156,8 @@ const SNAP_HOOK_LANES = 3;
 
 /**
  * Zoom-dependent work and built pieces kept between rebuilds at one zoom. It resets itself when the
- * graph, zoom, sizes, `smooth`, `openFolds` or `laneStyle` changes. Use one cache per sequence of
- * builds: its layouts share `LanePath` objects, and every build rewrites their `startDistance`.
+ * graph, zoom, sizes, `smooth`, `openFolds` or `laneStyle` changes. Its layouts share `LanePath`
+ * objects, whose `startDistance` is set once per zoom from every piece of the route.
  */
 export class LayoutCache {
     private state: ZoomState | null = null;
@@ -259,6 +259,8 @@ interface ZoomState {
     lanePaths: (LanePath | null | undefined)[];
     /** Per connector key, null once the geometry has refused it. */
     connPaths: Map<number, LanePath | null>;
+    /** Routes whose pieces carry their dash phase (see `assignDashPhase`). */
+    phased: Set<string>;
 }
 
 /** @internal A classic-script page has no type checker; a misspelled size would become a NaN mesh. */
@@ -303,7 +305,6 @@ export function layoutAtZoom(g: LineGraph, zoom: number, styleAt: SizesAtZoom, o
 
     const paths: LanePath[] = [];
     const laneIndex = new Map<number, LanePath>();
-    const connIndex = new Map<number, LanePath>();
     let vertices = 0;
     let edgesBuilt = 0;
 
@@ -333,7 +334,6 @@ export function layoutAtZoom(g: LineGraph, zoom: number, styleAt: SizesAtZoom, o
             if (plan.mode !== 1 || (only && !only.has(t.route))) continue;
             const path = plan.slide!;
             vertices += path.coords.length / 2;
-            connIndex.set(plan.key, path);
             paths.push(path);
         }
         for (const plan of tails) {
@@ -374,51 +374,17 @@ export function layoutAtZoom(g: LineGraph, zoom: number, styleAt: SizesAtZoom, o
                 const path = st.connPaths.get(m.key);
                 if (!path) continue;
                 vertices += path.coords.length / 2;
-                connIndex.set(m.key, path);
                 paths.push(path);
             }
         }
     }
 
-    // 4. Dash phase. A merged edge has no lane; the connector across it covers it.
-    for (const [rid, chains] of g.chains) {
-        if (!g.routes.get(rid)?.dash) continue;
-        for (const chain of chains) {
-            const seq = chain.steps.filter((s) => !st.short[s.edge] || laneIndex.has(laneKey(st, s.edge, rid)));
-            if (!seq.length) continue;
-            let dist = 0;
-            // A junction keys a crossing from whichever end met it first, not this chain's travel.
-            const cross = (u: number, endU: 'a' | 'b', v: number, endV: 'a' | 'b'): boolean => {
-                const along = connIndex.get(connKey(st, rid, u, endU, v, endV));
-                const path = along ?? connIndex.get(connKey(st, rid, v, endV, u, endU));
-                if (!path) return false;
-                const len = polylineLength(path.coords);
-                path.startDistance = along ? dist : -(dist + len);
-                dist += len;
-                return true;
-            };
-            const tail = (s: RouteStep) => (s.forward ? 'a' : 'b');
-            const head = (s: RouteStep) => (s.forward ? 'b' : 'a');
-            // A sliding tail's merged edges have no lanes and drop out of
-            // `seq`; its slide runs from the route's far end to the port lane.
-            const first = chain.steps[0], last = chain.steps[chain.steps.length - 1];
-            if (!chain.closed && first !== seq[0]) cross(first.edge, tail(first), seq[0].edge, tail(seq[0]));
-            for (let i = 0; i < seq.length; i++) {
-                const s = seq[i];
-                const e = g.edges[s.edge];
-                const lane = laneIndex.get(laneKey(st, e.id, rid));
-                const laneLen = lane ? polylineLength(lane.coords) : st.edgeLen[e.id];
-                // A piece drawn against the route's travel takes a negative
-                // start, which the tessellator reads from the piece's far end.
-                if (lane) lane.startDistance = s.forward ? dist : -(dist + laneLen);
-                dist += laneLen;
-                const next = i + 1 < seq.length ? seq[i + 1] : chain.closed ? seq[0] : null;
-                if (!next) {
-                    if (!chain.closed && last !== s) cross(s.edge, head(s), last.edge, head(last));
-                    break;
-                }
-                if (!cross(e.id, head(s), next.edge, tail(next))) dist += 2 * st.spacing;
-            }
+    // 4. Dash phase, once per zoom state for each dashed route that is drawn: it is read off every
+    //    piece of the route, in or out of view, so it does not move with the viewport.
+    for (const p of paths) {
+        if (p.look.dash && !st.phased.has(p.route)) {
+            assignDashPhase(st, p.route);
+            st.phased.add(p.route);
         }
     }
 
@@ -554,6 +520,7 @@ function zoomState(g: LineGraph, zoom: number, style: LaneSizes, smooth: boolean
         lanes: new Array(E * routeCount),
         lanePaths: new Array(E * routeCount),
         connPaths: new Map(),
+        phased: new Set(),
     };
     return st;
 }
@@ -869,6 +836,127 @@ function islandPaths(st: ZoomState, isl: JunctionIsland): LanePath[] {
         if (path) lanes.push(path);
     }
     return (isl.paths = lanes);
+}
+
+/**
+ * Dash phase of one route: the distance along the route at which each piece starts, so that at
+ * every seam the pieces agree. Every piece of the route is built, in view or not, and the distance
+ * spreads from a root piece across shared end points, so the phase is the same whatever the
+ * viewport, and a fork or a loop end that rejoins its stem reads on from the piece it meets. A
+ * loop cannot agree at every seam: the last seam reached takes the mismatch. A route drawn in
+ * several separate parts gets a root in each. Where no walk from a chain's start could have
+ * handed the distance on, this reads it off the geometry instead; it is not from the cited papers.
+ */
+function assignDashPhase(st: ZoomState, route: string): void {
+    const g = st.graph;
+    // Whether a lane's coordinates run with the route's travel, from its chain step.
+    const forwardOn = new Map<number, boolean>();
+    for (const chain of g.chains.get(route) ?? []) {
+        for (const s of chain.steps) forwardOn.set(s.edge, s.forward);
+    }
+    const travelEnd = (edge: number): 'a' | 'b' => (forwardOn.get(edge) === false ? 'a' : 'b');
+    const pieces: LanePath[] = [];
+    // Per piece, whether its coordinates run with the route's travel.
+    const along = new Map<LanePath, boolean>();
+    const add = (p: LanePath | null | undefined, withTravel: boolean) => {
+        if (p && !along.has(p)) {
+            along.set(p, withTravel);
+            pieces.push(p);
+        }
+    };
+    const addLane = (edge: number) => add(lanePathOf(st, edge, route), forwardOn.get(edge) !== false);
+    for (const e of g.edges) if (!st.short[e.id] && e.routes.includes(route)) addLane(e.id);
+    for (let ji = 0; ji < st.junctions.length; ji++) {
+        const {groups, tails} = planJunction(st, ji);
+        // A tail and an island are built in travel order.
+        for (const plan of tails) {
+            if (plan.tail.route !== route) continue;
+            resolveTail(st, plan);
+            if (plan.mode === 1) add(plan.slide, true);
+            else for (const {edge} of plan.tail.edges) addLane(edge);
+        }
+        for (const grp of groups) {
+            if (!grp.members.some((m) => m.route === route)) continue;
+            buildGroup(st, grp);
+            for (const m of grp.members) {
+                if (m.route !== route || m.plan?.mode === 1) continue;
+                // A connector sets off from the lane end it arrives by; a tail's Bezier from the
+                // lane the route reaches first.
+                add(st.connPaths.get(m.key), !!m.plan || m.pu.end === travelEnd(m.pu.edge));
+            }
+        }
+        for (const isl of st.junctions[ji].islands) {
+            if (isl.route === route) for (const p of islandPaths(st, isl)) add(p, true);
+        }
+    }
+    if (!pieces.length) return;
+    // Pieces by end point; snapped ends are exact copies, so the key is the coordinates as they are.
+    const atPoint = new Map<string, {piece: LanePath; end: 0 | 1}[]>();
+    const keyAt = (p: LanePath, end: 0 | 1) => {
+        const c = p.coords;
+        return end ? `${c[c.length - 2]},${c[c.length - 1]}` : `${c[0]},${c[1]}`;
+    };
+    for (const p of pieces) {
+        for (const end of [0, 1] as const) {
+            const k = keyAt(p, end);
+            const list = atPoint.get(k);
+            if (list) list.push({piece: p, end});
+            else atPoint.set(k, [{piece: p, end}]);
+        }
+    }
+    const length = new Map<LanePath, number>();
+    const lengthOf = (p: LanePath) => {
+        let l = length.get(p);
+        if (l === undefined) length.set(p, (l = polylineLength(p.coords)));
+        return l;
+    };
+    // Per piece, the distance at its first and last vertex, once reached.
+    const at = new Map<LanePath, [number, number]>();
+    const reach = (p: LanePath, end: 0 | 1, d: number) => {
+        const l = lengthOf(p);
+        // Distance grows with travel: from the first vertex along the piece, or toward it.
+        if (along.get(p)) at.set(p, end ? [d - l, d] : [d, d + l]);
+        else at.set(p, end ? [d + l, d] : [d, d - l]);
+    };
+    // The first root is the first drawn piece of the route's first chain; each part the seams do
+    // not join to one gets a root of its own, so every piece is reached.
+    let root = pieces[0];
+    chains: for (const chain of g.chains.get(route) ?? []) {
+        for (const s of chain.steps) {
+            const lane = st.lanePaths[laneKey(st, s.edge, route)];
+            if (lane) {
+                root = lane;
+                break chains;
+            }
+        }
+    }
+    for (let next = -1; next < pieces.length; next++) {
+        if (next >= 0) {
+            if (at.has(pieces[next])) continue;
+            root = pieces[next];
+        }
+        reach(root, 0, 0);
+        const queue = [root];
+        for (let i = 0; i < queue.length; i++) {
+            const p = queue[i];
+            const [d0, d1] = at.get(p)!;
+            for (const end of [0, 1] as const) {
+                for (const other of atPoint.get(keyAt(p, end))!) {
+                    if (at.has(other.piece)) continue;
+                    reach(other.piece, other.end, end ? d1 : d0);
+                    queue.push(other.piece);
+                }
+            }
+        }
+        // Distances before the root are negative, and the sign is spoken for: it says which way
+        // the piece runs. Shifting the whole part by one amount leaves every seam as it is.
+        let least = 0;
+        for (const p of queue) least = Math.min(least, ...at.get(p)!);
+        for (const p of queue) {
+            const d0 = at.get(p)![0] - least;
+            p.startDistance = along.get(p) ? d0 : -d0;
+        }
+    }
 }
 
 /**

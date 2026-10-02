@@ -23,6 +23,13 @@ follows Keep a Changelog, and the project uses semantic versioning.
   out. A loop or a ring the mapped line itself makes is now kept at every
   zoom. Loop removal cut it as if the lane offset had made it, which also
   shortcut some hairpin lanes at z13 to z16.
+- Dashes no longer jump when the map pans. The dash phase was read off the
+  pieces the viewport had built, so a lane outside the view counted its
+  edge's length instead of its own. It is now read off every piece of the
+  route once per zoom. A connector that joins a branch to its trunk, or a
+  loop end to its stem, now carries the phase on instead of starting it
+  over. A dashed route makes the first build at a zoom cost more (see
+  docs/performance.md).
 - While the map zooms between rebuilds, a lane no longer bends off its
   path where it was cut to remove a loop.
 - After `setGraph`, `laneFeatures` and `queryLane` no longer mix the old

@@ -91,19 +91,19 @@ RAMBA:
 
 | Zoom | Full layout | Path vertices | Merged edges | Mesh build | Mesh vertices | Mesh size | Culled layout, phone view |
 |---|---|---|---|---|---|---|---|
-| 12 | 16 ms | 6350 | 197 | 4 ms | 34051 | 1.6 MB | 16 ms, 295 of 492 edges |
-| 14 | 19 ms | 15661 | 71 | 7 ms | 62532 | 3.0 MB | 15 ms, 310 of 492 edges |
-| 16 | 20 ms | 32814 | 9 | 12 ms | 102685 | 5.0 MB | 5 ms, 49 of 492 edges |
-| 18 | 29 ms | 65639 | 1 | 19 ms | 169162 | 8.3 MB | 3 ms, 12 of 492 edges |
+| 12 | 17 ms | 6471 | 197 | 4 ms | 35128 | 1.7 MB | 19 ms, 295 of 492 edges |
+| 14 | 22 ms | 15732 | 71 | 8 ms | 62884 | 3.0 MB | 15 ms, 310 of 492 edges |
+| 16 | 21 ms | 32834 | 9 | 14 ms | 102738 | 5.0 MB | 6 ms, 49 of 492 edges |
+| 18 | 30 ms | 65639 | 1 | 21 ms | 169162 | 8.3 MB | 2 ms, 12 of 492 edges |
 
 MFO:
 
 | Zoom | Full layout | Path vertices | Merged edges | Mesh build | Mesh vertices | Mesh size | Culled layout, phone view |
 |---|---|---|---|---|---|---|---|
-| 12 | 8 ms | 5103 | 7 | 2 ms | 15773 | 0.8 MB | 8 ms, 36 of 43 edges |
-| 14 | 14 ms | 12824 | 1 | 3 ms | 32004 | 1.6 MB | 1 ms, 4 of 43 edges |
-| 16 | 19 ms | 29576 | 1 | 7 ms | 64968 | 3.2 MB | 1 ms, 4 of 43 edges |
-| 18 | 30 ms | 64549 | 0 | 14 ms | 135010 | 6.7 MB | under 1 ms, 0 of 43 edges |
+| 12 | 6 ms | 5288 | 7 | 2 ms | 16549 | 0.8 MB | 6 ms, 36 of 43 edges |
+| 14 | 13 ms | 12978 | 1 | 4 ms | 32388 | 1.6 MB | 1 ms, 4 of 43 edges |
+| 16 | 19 ms | 29594 | 1 | 8 ms | 64988 | 3.2 MB | 1 ms, 4 of 43 edges |
+| 18 | 31 ms | 64549 | 0 | 18 ms | 135010 | 6.7 MB | under 1 ms, 0 of 43 edges |
 
 MFO is a small network of dense lines, so at z12 the phone view holds
 almost all of it and the culled build is the full one. The example
@@ -155,6 +155,14 @@ layout table. Opening fold backs is part of the per-zoom work and adds
 nothing measurable to any row. The cached run of this row costs more than
 the uncached one because the caches are filled for a zoom that is never
 asked for again.
+
+A dashed route adds to the first build at a zoom. Its dash phase is read
+off every piece of the route, in view or not, so that the phase does not
+move with the viewport, and that builds every piece of the route. With
+all 14 RAMBA routes dashed, the median rebuild of the third row goes from
+4.0 ms to 12.9 ms and the 90th percentile from 10.2 ms to 20.1 ms. With 4
+of the 14 dashed, the median is 4.2 ms. The pan rows do not change: the
+phase is kept with the zoom.
 
 ## Off the render thread
 
