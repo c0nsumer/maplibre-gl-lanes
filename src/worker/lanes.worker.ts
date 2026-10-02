@@ -109,9 +109,12 @@ interface Session {
     laneStyle: LaneStyle;
 }
 
-/** One session per graph, so two lane layers do not evict each other. */
+/**
+ * One session per graph, so lane layers do not evict each other: each eviction costs the
+ * layer a round trip and a graph serialized on the main thread. The cap only bounds memory.
+ */
 const sessions = new Map<number, Session>();
-const MAX_SESSIONS = 4;
+const MAX_SESSIONS = 16;
 
 function openSession(req: LayoutRequest): Session {
     const graph = fromTransfer(req.graph!);
