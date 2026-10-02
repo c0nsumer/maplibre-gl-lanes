@@ -3,6 +3,31 @@
 All notable changes to maplibre-gl-lanes are recorded here. The format
 follows Keep a Changelog, and the project uses semantic versioning.
 
+## Unreleased
+
+### Fixed
+
+- A lane no longer shoots a spike far across the map at low zoom. On a
+  twisty trail whose hairpins shrink to a fraction of a pixel, the inside
+  corner of a bend could land kilometers away.
+- While the map zooms between rebuilds, a lane no longer bends off its
+  path where it was cut to remove a loop.
+- After `setGraph`, `laneFeatures` and `queryLane` no longer mix the old
+  layout with the new graph's edges, and the old lanes stay in place
+  until the new ones are drawn.
+- `laneFeaturesAsync` no longer returns an answer laid out before a
+  `setSizes` or `setLaneStyle` call.
+- Without a worker, `setLaneStyle` with the same function now reads the
+  callback again, as documented.
+- A route ending over parallel edges no longer loses one of its pieces
+  when the layer rebuilds at the same zoom.
+- Lane, casing and highlight colors written as `oklch()`, `lab()`,
+  `color()` or `color-mix()` no longer draw gray.
+- A lane that turns left and nearly reverses now has a round tip, not a
+  square one.
+- More than four lane layers on a page no longer resend their graphs to
+  the worker as they take turns rebuilding.
+
 ## 1.2.0 - 2026-09-30
 
 ### Added
