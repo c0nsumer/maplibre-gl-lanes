@@ -128,7 +128,11 @@ chapter 6]:
   by a circular arc on the outside, then removes the loops that offsetting
   creates on tight bends, as LOOM does. Loop removal looks twelve offsets
   ahead along the path: the loop on the inside of a hairpin has a throat
-  several offsets long, and a shorter window left it as a spike. Before
+  several offsets long, and a shorter window left it as a spike. It cuts
+  only the loops the offset made. Such a loop winds against the bend it
+  came from. A loop the line itself makes, a ring or a lollipop, winds
+  the same way as the ground under it, and is kept. This test is not from
+  the cited papers; it was worked out for this project. Before
   offsetting, the centerline is simplified with a tolerance of a quarter
   of the edge's widest lane offset, so zigzags too small to show under the
   bundle at that zoom do not throw the lanes of both legs across each
@@ -174,7 +178,12 @@ chapter 6]:
   sliding from the lane it arrives on to the lane it leaves by, so the
   trail's shape stays visible and nothing cuts a corner. A route that
   starts or ends inside the merged junction gets one such piece from its
-  lane to its end point. A route that forks inside the merged junction
+  lane to its end point. So does a loop the route makes inside the
+  junction, and a branch that hangs off a merged edge where the route
+  enters it. A route whose every edge has merged, or a chain joined to
+  the rest of its route only through merged edges, is drawn as one such
+  piece on its own, sliding from the lane it would hold on its first edge
+  to the lane on its last. A route that forks inside the merged junction
   crosses one merged edge on two pieces. Each of those slides by way of
   the lane the route holds on that edge, so the two share one line across
   it and the route stays one lane wide. Left alone, the cut-backs and lane-change
@@ -182,8 +191,10 @@ chapter 6]:
   blobs, which is what dense networks showed at overview zooms. The
   clearance two bundles need to pass each other at a shallow angle is not
   a trigger: it can exceed a whole hairpin, and merging that replaces a
-  smooth turn with a corner. Where the sliding lane would loop through a
-  hairpin, the plain Bezier connector takes over.
+  smooth turn with a corner. A sliding piece is snapped to the lane ends
+  it joins, and the hook that can leave at an end is cut like an offset
+  loop. The plain Bezier connector takes over only where there is nothing
+  left to slide along.
 
 Differences from LOOM: the layout is computed in screen pixels for the
 current zoom rather than in map units for a fixed scale; lanes of routes

@@ -8,6 +8,7 @@ import {readFileSync} from 'node:fs';
 import {buildLineGraph} from '../src/core/graph';
 import {orderLanes} from '../src/core/order';
 import {layoutAtZoom, type LanePath, type Layout} from '../src/core/layout';
+import {removeLoopsAnchored} from '../src/core/geometry';
 
 function line(route: string, coords: number[][]): GeoJSON.Feature {
     return {type: 'Feature', properties: {route, color: '#000'}, geometry: {type: 'LineString', coordinates: coords}};
@@ -111,8 +112,12 @@ describe('RAMBA junctions across zooms', () => {
         it(`stays continuous with no self-crossing connectors at z${z}`, () => {
             const layout = layoutAtZoom(g, z, styleAt);
             expect(breaks(g, layout)).toEqual([]);
-            const crossing = layout.paths.filter((p) => p.kind === 'connector' && selfIntersects(p.coords));
-            expect(crossing.length).toBeLessThanOrEqual(z <= 14 ? 1 : 0);
+            // A connector crosses itself only where the mapped line does: a hairpin whose apex
+            // is merged, or a knot in the line. Loop removal with no window limit finds nothing
+            // else to cut in such a piece.
+            const crossing = layout.paths.filter((p) => p.kind === 'connector' && selfIntersects(p.coords)
+                && removeLoopsAnchored(p.coords, p.anchors, Infinity).points.length !== p.coords.length);
+            expect(crossing.map((p) => `${p.route} ${p.between!.join('->')}`)).toEqual([]);
             // A connector leaves its lane ends along them, never sideways. A
             // connector derived from a clique reference that was cut
             // elsewhere once had its ends snapped onto the lane from 28 px

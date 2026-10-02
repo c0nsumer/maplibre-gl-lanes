@@ -16,6 +16,13 @@ follows Keep a Changelog, and the project uses semantic versioning.
 - A lane no longer shoots a spike far across the map at low zoom. On a
   twisty trail whose hairpins shrink to a fraction of a pixel, the inside
   corner of a bend could land kilometers away.
+- Every route now draws at every zoom. At overview zooms, a route whose
+  edges had all merged into one junction drew nothing, and parts of routes
+  came and went between zooms: a branch joined to a merged edge at the end
+  a route entered it by, and a loop inside a merged junction, were left
+  out. A loop or a ring the mapped line itself makes is now kept at every
+  zoom. Loop removal cut it as if the lane offset had made it, which also
+  shortcut some hairpin lanes at z13 to z16.
 - While the map zooms between rebuilds, a lane no longer bends off its
   path where it was cut to remove a loop.
 - After `setGraph`, `laneFeatures` and `queryLane` no longer mix the old

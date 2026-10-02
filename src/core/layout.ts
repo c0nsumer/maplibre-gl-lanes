@@ -18,6 +18,7 @@ import {
     selfIntersects,
     polylineBounds,
     polylineLength,
+    removeLoopsAnchored,
     reversed,
     simplify,
     simplifyRank,
@@ -147,6 +148,11 @@ const CORNER_MAX_REACH = 1.5;
  * this many lanes beyond its own offset, it follows the line instead.
  */
 const FOLLOW_ABOVE_LANES = 1;
+/**
+ * A sliding piece is snapped to the lane ends it joins, which can pull an end across the path.
+ * The hook that leaves is cut like an offset loop, within this many lanes of path.
+ */
+const SNAP_HOOK_LANES = 3;
 
 /**
  * Zoom-dependent work and built pieces kept between rebuilds at one zoom. It resets itself when the
@@ -315,8 +321,8 @@ export function layoutAtZoom(g: LineGraph, zoom: number, styleAt: SizesAtZoom, o
         }
     }
 
-    // 2. Tails: one piece sliding along the merged edges to the route's end, or where that would
-    //    loop, plain lanes on the merged edges that a Bezier from step 3 joins.
+    // 2. Tails: one piece sliding along the merged edges to the route's end, or where there is
+    //    nothing to slide along, plain lanes on the merged edges that a Bezier from step 3 joins.
     for (let ji = 0; ji < st.junctions.length; ji++) {
         if (!touchesView(st.junctions[ji], inView)) continue;
         const tails = planJunction(st, ji).tails;
@@ -338,6 +344,18 @@ export function layoutAtZoom(g: LineGraph, zoom: number, styleAt: SizesAtZoom, o
                 const path = lanePathOf(st, edge, plan.tail.route);
                 if (!path) continue;
                 laneIndex.set(k, path);
+                vertices += path.coords.length / 2;
+                paths.push(path);
+            }
+        }
+        for (const isl of st.junctions[ji].islands) {
+            if ((only && !only.has(isl.route)) || !isl.steps.some((s) => inView[s.edge])) continue;
+            for (const path of islandPaths(st, isl)) {
+                if (path.kind === 'lane') {
+                    const k = laneKey(st, path.edge, isl.route);
+                    if (laneIndex.has(k)) continue;
+                    laneIndex.set(k, path);
+                }
                 vertices += path.coords.length / 2;
                 paths.push(path);
             }
@@ -788,7 +806,7 @@ function guideOf(st: ZoomState, parts: Polyline[]): Polyline {
     return st.smooth ? simplify(smoothCatmullRom(out, SMOOTH_SEGMENT_PX, 10, 3, CORNER_BEND_DEG, CORNER_RADIUS_LANES * st.spacing), SIMPLIFY_TOLERANCE_PX) : out;
 }
 
-/** A tail slides as one piece (mode 1), or where that loops, falls back to lanes and a Bezier (2). */
+/** A tail slides as one piece (mode 1), or with nothing to slide along, falls back to lanes and a Bezier (2). */
 function resolveTail(st: ZoomState, plan: TailPlan): void {
     if (plan.mode) return;
     plan.mode = 2;
@@ -807,24 +825,50 @@ function resolveTail(st: ZoomState, plan: TailPlan): void {
     const guide = t.side === 'end' ? guideOf(st, [portPart, ...parts]) : guideOf(st, [...parts, portPart]);
     const slide = t.side === 'end' ? offsetPolylineSlidingAnchored(guide, portOffset, farOffset) : offsetPolylineSlidingAnchored(guide, farOffset, portOffset);
     if (slide.points.length < 4) return;
-    const coords = slide.points;
     const lanePts = t.side === 'end' ? (p.end === 'b' ? portLane.points : reversed(portLane.points)) : (p.end === 'a' ? portLane.points : reversed(portLane.points));
     if (t.side === 'end') {
-        coords[0] = lanePts[lanePts.length - 2];
-        coords[1] = lanePts[lanePts.length - 1];
+        slide.points[0] = lanePts[lanePts.length - 2];
+        slide.points[1] = lanePts[lanePts.length - 1];
     } else {
-        coords[coords.length - 2] = lanePts[0];
-        coords[coords.length - 1] = lanePts[1];
+        slide.points[slide.points.length - 2] = lanePts[0];
+        slide.points[slide.points.length - 1] = lanePts[1];
     }
-    if (selfIntersects(coords)) return;
+    const {points: coords, anchors} = removeLoopsAnchored(slide.points, slide.anchors, SNAP_HOOK_LANES * st.spacing);
+    if (coords.length < 4) return;
     const travel = travelSign(g.edges[p.edge].direction.get(t.route)) * (t.side === 'end' ? (p.end === 'b' ? 1 : -1) : (p.end === 'a' ? 1 : -1));
     const between: [number, number] = t.side === 'end' ? [p.edge, far.edge] : [far.edge, p.edge];
     plan.slide = {
-        route: t.route, look: lookOf(st, g.edges[p.edge], t.route), coords, anchors: slide.anchors,
+        route: t.route, look: lookOf(st, g.edges[p.edge], t.route), coords, anchors,
         kind: 'connector', travel: travel as 1 | -1 | 0, startDistance: 0, edge: between[0], node: p.node, between,
     };
     st.connPaths.set(plan.key, plan.slide);
     plan.mode = 1;
+}
+
+/** An island slides from its first edge's lane to its last's; with nothing to slide along, its plain lanes. */
+function islandPaths(st: ZoomState, isl: JunctionIsland): LanePath[] {
+    if (isl.paths) return isl.paths;
+    const g = st.graph;
+    const first = isl.steps[0], last = isl.steps[isl.steps.length - 1];
+    const guide = guideOf(st, isl.steps.map((s) => orientedPx(st, s.edge, s.forward)));
+    const d0 = offsetTravel(st, first.edge, isl.route, first.forward);
+    const d1 = offsetTravel(st, last.edge, isl.route, last.forward);
+    const slide = offsetPolylineSlidingAnchored(guide, d0, d1);
+    if (slide.points.length >= 4) {
+        const e = g.edges[first.edge];
+        const travel = (travelSign(e.direction.get(isl.route)) * (first.forward ? 1 : -1)) as 1 | -1 | 0;
+        return (isl.paths = [{
+            route: isl.route, look: lookOf(st, e, isl.route), coords: slide.points, anchors: slide.anchors,
+            kind: 'connector', travel, startDistance: 0, edge: first.edge, node: first.forward ? e.a : e.b,
+            between: [first.edge, last.edge],
+        }]);
+    }
+    const lanes: LanePath[] = [];
+    for (const s of isl.steps) {
+        const path = lanePathOf(st, s.edge, isl.route);
+        if (path) lanes.push(path);
+    }
+    return (isl.paths = lanes);
 }
 
 /**
@@ -930,8 +974,9 @@ function buildTailConnector(st: ZoomState, m: ConnMember, clique: {member: ConnM
 
 /**
  * A connector over merged edges slides along their geometry from cut end to cut end; a Bezier
- * there overshoots or cuts corners. False, where the slide loops in a hairpin, hands it to the
- * plain Bezier. The loop check runs after snapping, which can pull an end across the path.
+ * there overshoots or cuts corners. False, where nothing is left to slide along, hands it to the
+ * plain Bezier. A slide that crosses itself follows a route that loops inside the junction, and
+ * keeps the loop: the offset's own loops were cut when it was built.
  */
 function buildViaConnector(st: ZoomState, m: ConnMember, from: Polyline, to: Polyline): boolean {
     const g = st.graph;
@@ -988,15 +1033,15 @@ function buildViaConnector(st: ZoomState, m: ConnMember, from: Polyline, to: Pol
     const guide = st.smooth ? simplify(smoothCatmullRom(centerline, SMOOTH_SEGMENT_PX, 10, 3, CORNER_BEND_DEG, CORNER_RADIUS_LANES * st.spacing), SIMPLIFY_TOLERANCE_PX) : centerline;
     const slide = offsetPolylineSlidingAnchored(guide, m.lateral, m.lateralOut, 4, knots);
     if (slide.points.length < 4) return false;
-    const coords = slide.points;
     // Snapped: the ends differ only by the normal at the cut point.
-    coords[0] = from[from.length - 2];
-    coords[1] = from[from.length - 1];
-    coords[coords.length - 2] = to[0];
-    coords[coords.length - 1] = to[1];
-    if (selfIntersects(coords)) return false;
+    slide.points[0] = from[from.length - 2];
+    slide.points[1] = from[from.length - 1];
+    slide.points[slide.points.length - 2] = to[0];
+    slide.points[slide.points.length - 1] = to[1];
+    const {points: coords, anchors} = removeLoopsAnchored(slide.points, slide.anchors, SNAP_HOOK_LANES * st.spacing);
+    if (coords.length < 4) return false;
     st.connPaths.set(m.key, {
-        route: m.route, look: lookOf(st, g.edges[m.pu.edge], m.route), coords, anchors: slide.anchors,
+        route: m.route, look: lookOf(st, g.edges[m.pu.edge], m.route), coords, anchors,
         kind: 'connector', travel: m.travel, startDistance: 0, edge: m.pu.edge, node: m.pu.node, between: [m.pu.edge, m.pv.edge],
     });
     return true;
@@ -1027,8 +1072,22 @@ interface Junction {
     ports: JunctionPort[];
     transitions: JunctionTransition[];
     tails: JunctionTail[];
+    islands: JunctionIsland[];
     /** Every edge at its nodes, drawn or merged, for the viewport test. */
     edges: number[];
+}
+
+/**
+ * A run of a route's merged edges joined to none of its drawn edges: a route with no drawn edge
+ * in the junction, or a chain that hangs off a merged edge where no port reaches. Drawn on its own
+ * as one sliding piece, like a tail without a lane (see `islandPaths`).
+ */
+interface JunctionIsland {
+    route: string;
+    /** In travel order, with whether travel runs a-to-b. */
+    steps: {edge: number; forward: boolean}[];
+    /** Built on first use; empty where the run is too short to draw. */
+    paths?: LanePath[];
 }
 
 /** A route that starts or ends inside a junction (see `resolveTail`). */
@@ -1057,7 +1116,7 @@ function buildJunctions(g: LineGraph, short: Uint8Array, edgeLen: Float64Array, 
     for (let n = 0; n < N; n++) {
         const root = find(n);
         let j = byRoot.get(root);
-        if (!j) byRoot.set(root, (j = {ports: [], transitions: [], tails: [], edges: []}));
+        if (!j) byRoot.set(root, (j = {ports: [], transitions: [], tails: [], islands: [], edges: []}));
         junctionOf[n] = j;
         for (const p of g.nodes[n].ports) {
             j.edges.push(p.edge);
@@ -1071,7 +1130,6 @@ function buildJunctions(g: LineGraph, short: Uint8Array, edgeLen: Float64Array, 
     const follow = (route: string, edge: number, entryNode: number): Walk[] => {
         const found: Walk[] = [];
         const visit = (cur: number, curNode: number, walked: {edge: number; entryNode: number}[]) => {
-            if (walked.some((w) => w.edge === cur)) return;
             const path = [...walked, {edge: cur, entryNode: curNode}];
             const e = g.edges[cur];
             const far = e.a === curNode ? e.b : e.a;
@@ -1083,6 +1141,9 @@ function buildJunctions(g: LineGraph, short: Uint8Array, edgeLen: Float64Array, 
                 const pb = at.ports[t2.to];
                 const next = pa.edge === cur && pb.edge !== cur ? pb : pb.edge === cur && pa.edge !== cur ? pa : null;
                 if (!next) continue;
+                // Back onto an edge this walk has crossed: a loop inside the junction. It is not a
+                // way onward, so a walk with no other ends here, and the loop is drawn as a tail.
+                if (short[next.edge] && path.some((w) => w.edge === next.edge)) continue;
                 onward = true;
                 if (short[next.edge]) visit(next.edge, far, path);
                 else found.push({edge: next.edge, end: next.end, node: far, walked: path});
@@ -1143,6 +1204,60 @@ function buildJunctions(g: LineGraph, short: Uint8Array, edgeLen: Float64Array, 
                 }
                 lifted.set(key, {index: j.transitions.length, length});
                 j.transitions.push(crossing);
+            }
+        }
+    }
+    // Merged edges of a route that no walk reached. A walk follows the transitions at the far end
+    // of each edge it crosses, so a chain joined to a merged edge at the end the walk entered by
+    // is never visited; and a route with no drawn edge in the junction has no walk at all. Each
+    // run of such edges along a chain is drawn from the port of a drawn edge joined to the same
+    // merged edge at the run's end, between two such ports, or where it has none, on its own.
+    const covered = new Set<string>();
+    for (const j of byRoot.values()) {
+        for (const t of j.transitions) for (const v of t.via) covered.add(`${t.route}|${v.edge}`);
+        for (const t of j.tails) for (const v of t.edges) covered.add(`${t.route}|${v.edge}`);
+    }
+    const nodeOf = (s: {edge: number; forward: boolean}, start: boolean) =>
+        s.forward === start ? g.edges[s.edge].a : g.edges[s.edge].b;
+    // The port at `node` of a drawn edge the route joins to one of the merged edges that `edge` is
+    // joined to there: the two meet where the merged edge's lanes would have.
+    const portJoinedTo = (j: Junction, route: string, node: number, edge: number): number => {
+        const stems = new Set<number>();
+        const n = g.nodes[node];
+        for (const t of n.transitions) {
+            if (t.route !== route || t.from < 0 || t.to < 0) continue;
+            const pa = n.ports[t.from], pb = n.ports[t.to];
+            if (pa.edge === edge && short[pb.edge]) stems.add(pb.edge);
+            if (pb.edge === edge && short[pa.edge]) stems.add(pa.edge);
+        }
+        if (!stems.size) return -1;
+        for (const t of n.transitions) {
+            if (t.route !== route || t.from < 0 || t.to < 0) continue;
+            const pa = n.ports[t.from], pb = n.ports[t.to];
+            const drawn = stems.has(pb.edge) && !short[pa.edge] ? pa
+                : stems.has(pa.edge) && !short[pb.edge] ? pb : null;
+            if (drawn && drawn.edge !== edge) return portIndex[drawn.edge * 2 + (drawn.end === 'a' ? 0 : 1)];
+        }
+        return -1;
+    };
+    for (const [route, chains] of g.chains) {
+        for (const chain of chains) {
+            const steps = chain.steps;
+            for (let i = 0; i < steps.length; i++) {
+                if (!short[steps[i].edge] || covered.has(`${route}|${steps[i].edge}`)) continue;
+                let k = i;
+                while (k < steps.length && short[steps[k].edge] && !covered.has(`${route}|${steps[k].edge}`)) k++;
+                const run = steps.slice(i, k).map((s) => ({edge: s.edge, forward: s.forward}));
+                for (const s of run) covered.add(`${route}|${s.edge}`);
+                const first = run[0], last = run[run.length - 1];
+                const j = junctionOf[nodeOf(first, true)];
+                const u = portJoinedTo(j, route, nodeOf(first, true), first.edge);
+                const v = portJoinedTo(j, route, nodeOf(last, false), last.edge);
+                if (u >= 0 && v >= 0 && u !== v) j.transitions.push({route, u, v, via: run});
+                else if (u >= 0) j.tails.push({route, port: u, side: 'end', edges: run});
+                else if (v >= 0) j.tails.push({route, port: v, side: 'start', edges: run});
+                else j.islands.push({route, steps: run});
+                i = k - 1;
             }
         }
     }

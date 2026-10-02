@@ -416,32 +416,47 @@ export function intersectSegments(ax: number, ay: number, bx: number, by: number
     return {x: ax + rX * t, y: ay + rY * t, t, u};
 }
 
-/** Offset loops are local, so only segments within `window` of path length are tested. */
+/**
+ * Smallest share of the offset loop's area the ground under it must enclose, the same way
+ * around, for the loop to be the line's own (see `removeLoopsAnchored`). A ring half an offset
+ * across, offset outward, encloses a ninth of its offset's area.
+ */
+const OWN_LOOP_AREA_SHARE = 0.1;
+
+/**
+ * Cut the loops an offset makes where the line bends tighter than the offset. Such a loop winds
+ * against the bend it came from, while a loop the line itself makes, a ring or a lollipop, winds
+ * the same way as the ground under it: the first is cut, the second is kept. Offset loops are
+ * local, so only segments within `window` of path length are tested, measured along the path
+ * as it was before any cut: each cut shortens the path, and measured on the shortened path, a
+ * window meant for the inside of a hairpin reaches ever farther along a twisty line.
+ */
 export function removeLoopsAnchored(p: Polyline, anchors: Polyline, window: number): {points: Polyline; anchors: Polyline} {
     let pts = p;
     let anc = anchors;
+    // Per vertex, its distance along the uncut path.
+    let along: number[] = new Array(p.length / 2);
+    along[0] = 0;
+    for (let k = 1; k < along.length; k++) {
+        along[k] = along[k - 1] + Math.hypot(p[k * 2] - p[k * 2 - 2], p[k * 2 + 1] - p[k * 2 - 1]);
+    }
     let guard = 0;
     for (;;) {
         if (guard++ > 1000) break;
         const n = pts.length / 2;
-        // Segment lengths once per pass: the window scan reads each many times.
-        const len = new Float64Array(Math.max(0, n - 1));
-        for (let k = 0; k < n - 1; k++) len[k] = Math.hypot(pts[k * 2 + 2] - pts[k * 2], pts[k * 2 + 3] - pts[k * 2 + 1]);
-        let found: {i: number; j: number; x: number; y: number; t: number} | null = null;
+        let found: {i: number; j: number; x: number; y: number; t: number; u: number} | null = null;
         outer: for (let i = 0; i < n - 1 && !found; i++) {
             const ax = pts[i * 2], ay = pts[i * 2 + 1], bx = pts[i * 2 + 2], by = pts[i * 2 + 3];
             const minX = ax < bx ? ax : bx, maxX = ax < bx ? bx : ax;
             const minY = ay < by ? ay : by, maxY = ay < by ? by : ay;
-            let acc = 0;
             for (let j = i + 2; j < n - 1; j++) {
-                acc += len[j - 1];
-                if (acc > window) break;
+                if (along[j] - along[i + 1] > window) break;
                 const cx = pts[j * 2], cy = pts[j * 2 + 1], dx = pts[j * 2 + 2], dy = pts[j * 2 + 3];
                 // Two segments whose boxes are apart cannot cross; this is nearly every pair.
                 if ((cx < minX && dx < minX) || (cx > maxX && dx > maxX) || (cy < minY && dy < minY) || (cy > maxY && dy > maxY)) continue;
                 const hit = intersectSegments(ax, ay, bx, by, cx, cy, dx, dy);
-                if (hit) {
-                    found = {i, j, x: hit.x, y: hit.y, t: hit.t};
+                if (hit && !ownLoop(pts, anc, i, j, hit)) {
+                    found = {i, j, x: hit.x, y: hit.y, t: hit.t, u: hit.u};
                     break outer;
                 }
             }
@@ -454,8 +469,37 @@ export function removeLoopsAnchored(p: Polyline, anchors: Polyline, window: numb
         // each vertex's offset from its anchor between rebuilds, so a far anchor slides it off the lane.
         const ai = found.i * 2, t = found.t;
         anc = anc.slice(0, cut).concat([anc[ai] + (anc[ai + 2] - anc[ai]) * t, anc[ai + 1] + (anc[ai + 3] - anc[ai + 1]) * t], anc.slice(keep));
+        const alongCut = along[found.i] + (along[found.i + 1] - along[found.i]) * t;
+        along = along.slice(0, found.i + 1).concat([alongCut], along.slice(found.j + 1));
     }
     return {points: pts, anchors: anc};
+}
+
+/** Whether the loop from segment `i` to segment `j` winds the same way as the ground under it. */
+type Crossing = {x: number; y: number; t: number; u: number};
+
+function ownLoop(pts: Polyline, anc: Polyline, i: number, j: number, hit: Crossing): boolean {
+    // Twice the signed area of the ring that runs from one point through vertices `k0` to `k1` of
+    // `xs` to another point and closes back to the first, by the shoelace formula.
+    const ring = (x0: number, y0: number, xs: Polyline, k0: number, k1: number, x1: number, y1: number): number => {
+        let a = 0, px = x0, py = y0;
+        for (let k = k0; k <= k1; k++) {
+            const x = xs[k * 2], y = xs[k * 2 + 1];
+            a += px * y - x * py;
+            px = x;
+            py = y;
+        }
+        return a + px * y1 - x1 * py + x1 * y0 - x0 * y1;
+    };
+    // The offset ring closes at the crossing. The ground ring runs between the ground under the
+    // crossing on each segment, which are two points, and closes between them.
+    const offset = ring(hit.x, hit.y, pts, i + 1, j, hit.x, hit.y);
+    const ground = ring(
+        anc[i * 2] + (anc[i * 2 + 2] - anc[i * 2]) * hit.t, anc[i * 2 + 1] + (anc[i * 2 + 3] - anc[i * 2 + 1]) * hit.t,
+        anc, i + 1, j,
+        anc[j * 2] + (anc[j * 2 + 2] - anc[j * 2]) * hit.u, anc[j * 2 + 1] + (anc[j * 2 + 3] - anc[j * 2 + 1]) * hit.u,
+    );
+    return offset * ground > 0 && Math.abs(ground) >= OWN_LOOP_AREA_SHARE * Math.abs(offset);
 }
 
 export function sampleCubicBezier(p0: Vec, p1: Vec, p2: Vec, p3: Vec, n: number): Polyline {

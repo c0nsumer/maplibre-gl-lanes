@@ -1,6 +1,6 @@
 import {describe, it, expect} from 'vitest';
 import {readFileSync} from 'node:fs';
-import {offsetPolylineAnchored, type Polyline} from '../src/core/geometry';
+import {offsetPolylineAnchored, polylineLength, selfIntersects, type Polyline} from '../src/core/geometry';
 import {buildLineGraph} from '../src/core/graph';
 import {orderLanes} from '../src/core/order';
 import {stabilizeLanes} from '../src/core/baselines';
@@ -118,5 +118,38 @@ describe('the inside of a hairpin narrower than a pixel', () => {
         const width = 2 + ((10.5 - 10) / 4) * 2;
         const layout = layoutAtZoom(g, 10.5, () => ({spacing: width + 1, width, casingWidth: 1}));
         for (const p of layout.paths) expect(farthestFromAnchor(p.coords, p.anchors)).toBeLessThan(60);
+    });
+});
+
+describe('a line that loops back over itself', () => {
+    // A trail that circles a knoll and comes back to its own stem. The loop is shorter than loop
+    // removal's window, and used to be cut as if the offset had made it: the lane shortcut across
+    // the stem, and a route whose edges all merge into one junction lost most of its length.
+    const lollipop: Polyline = [-20, 0, 0, 0];
+    for (let i = 0; i <= 24; i++) {
+        const a = Math.PI + (i / 24) * 2 * Math.PI;
+        lollipop.push(3 + 3 * Math.cos(a), 3 * Math.sin(a));
+    }
+    lollipop.push(-20, 0.5);
+
+    it('keeps the loop at an offset smaller than the loop', () => {
+        for (const d of [2, -2]) {
+            const lane = offsetPolylineAnchored(lollipop, d);
+            // The inside of the loop is shorter by one turn of the offset; the outside is longer.
+            expect(polylineLength(lane.points)).toBeGreaterThan(0.85 * (polylineLength(lollipop) - 2 * Math.PI * Math.abs(d)));
+            // Cut, the lane ends where the stem does; kept, it reaches around the far side.
+            let farthest = -Infinity;
+            for (let i = 0; i < lane.points.length; i += 2) farthest = Math.max(farthest, lane.points[i]);
+            expect(farthest).toBeGreaterThan(3);
+        }
+    });
+
+    it('still cuts the loop a hairpin makes, which winds against the turn', () => {
+        const hairpin: Polyline = [0, 0, 100, 0, 200, 0, 100, 30, 0, 60];
+        for (const d of [3, -3]) {
+            const lane = offsetPolylineAnchored(hairpin, d);
+            expect(selfIntersects(lane.points)).toBe(false);
+            expect(farthestFromAnchor(lane.points, lane.anchors)).toBeLessThanOrEqual(8 * 3);
+        }
     });
 });
