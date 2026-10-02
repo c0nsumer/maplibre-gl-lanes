@@ -1069,9 +1069,14 @@ function buildTailConnector(st: ZoomState, m: ConnMember, clique: {member: ConnM
 function buildViaConnector(st: ZoomState, m: ConnMember, from: Polyline, to: Polyline): boolean {
     const g = st.graph;
     const centerline: Polyline = [];
+    // Kept as it grows, in the order polylineLength would sum it: re-measuring the whole line at
+    // every merged edge made a long crossing quadratic.
+    let length = 0;
     const append = (pts: Polyline) => {
         for (let i = 0; i < pts.length; i += 2) {
-            if (centerline.length && Math.abs(centerline[centerline.length - 2] - pts[i]) < 1e-6 && Math.abs(centerline[centerline.length - 1] - pts[i + 1]) < 1e-6) continue;
+            const n = centerline.length;
+            if (n && Math.abs(centerline[n - 2] - pts[i]) < 1e-6 && Math.abs(centerline[n - 1] - pts[i + 1]) < 1e-6) continue;
+            if (n) length += Math.hypot(pts[i] - centerline[n - 2], pts[i + 1] - centerline[n - 1]);
             centerline.push(pts[i], pts[i + 1]);
         }
     };
@@ -1080,16 +1085,16 @@ function buildViaConnector(st: ZoomState, m: ConnMember, from: Polyline, to: Pol
     const middles: number[] = [];
     append(lastPortion(m.pu.end === 'b' ? uPx : reversed(uPx), m.pu.end === 'b' ? st.frontB[m.pu.edge] : st.frontA[m.pu.edge]));
     for (const step of m.via) {
-        const before = polylineLength(centerline);
+        const before = length;
         append(orientedPx(st, step.edge, step.forward));
-        middles.push((before + polylineLength(centerline)) / 2);
+        middles.push((before + length) / 2);
     }
     append(firstPortion(m.pv.end === 'a' ? vPx : reversed(vPx), m.pv.end === 'a' ? st.frontA[m.pv.edge] : st.frontB[m.pv.edge]));
     // A forked route's two connectors would run side by side over the merged edge, so they slide
     // by way of its lane at its middle. Tried on unforked ones, this moved more than it mended.
     const knots: number[] = [];
     if (m.forked) {
-        const total = polylineLength(centerline);
+        const total = length;
         m.via.forEach((step, i) => knots.push(middles[i] / total, offsetTravel(st, step.edge, m.route, step.forward)));
         // Pull the knots toward the straight slide by degrees, not outright, until no piece is
         // steeper than `MAX_SLIDE_SLOPE`, so the connector does not jump at the limiting zoom.
@@ -1215,14 +1220,19 @@ function buildJunctions(g: LineGraph, short: Uint8Array, edgeLen: Float64Array, 
     }
     // Every drawn edge a route comes out on, down each fork; `edge` is -1 where it ends.
     type Walk = {edge: number; end: 'a' | 'b'; node: number; walked: {edge: number; entryNode: number}[]};
+    // One stack and per-edge marks serve every walk; a walk copies the stack only where it ends.
+    const stack: {edge: number; entryNode: number}[] = [];
+    const onStack = new Uint8Array(g.edges.length);
     const follow = (route: string, edge: number, entryNode: number): Walk[] => {
         const found: Walk[] = [];
-        const visit = (cur: number, curNode: number, walked: {edge: number; entryNode: number}[]) => {
-            const path = [...walked, {edge: cur, entryNode: curNode}];
+        const visit = (cur: number, curNode: number) => {
+            stack.push({edge: cur, entryNode: curNode});
+            onStack[cur]++;
             const e = g.edges[cur];
             const far = e.a === curNode ? e.b : e.a;
             const at = g.nodes[far];
             let onward = false;
+            let path: {edge: number; entryNode: number}[] | null = null;
             for (const t2 of at.transitions) {
                 if (t2.route !== route || t2.from < 0 || t2.to < 0) continue;
                 const pa = at.ports[t2.from];
@@ -1231,14 +1241,16 @@ function buildJunctions(g: LineGraph, short: Uint8Array, edgeLen: Float64Array, 
                 if (!next) continue;
                 // Back onto an edge this walk has crossed: a loop inside the junction. It is not a
                 // way onward, so a walk with no other ends here, and the loop is drawn as a tail.
-                if (short[next.edge] && path.some((w) => w.edge === next.edge)) continue;
+                if (short[next.edge] && onStack[next.edge]) continue;
                 onward = true;
-                if (short[next.edge]) visit(next.edge, far, path);
-                else found.push({edge: next.edge, end: next.end, node: far, walked: path});
+                if (short[next.edge]) visit(next.edge, far);
+                else found.push({edge: next.edge, end: next.end, node: far, walked: (path ??= stack.slice())});
             }
-            if (!onward) found.push({edge: -1, end: 'a', node: far, walked: path});
+            if (!onward) found.push({edge: -1, end: 'a', node: far, walked: (path ??= stack.slice())});
+            onStack[cur]--;
+            stack.pop();
         };
-        visit(edge, entryNode, []);
+        visit(edge, entryNode);
         return found;
     };
     // A crossing is met from both of its drawn ends and kept once.
@@ -1300,10 +1312,31 @@ function buildJunctions(g: LineGraph, short: Uint8Array, edgeLen: Float64Array, 
     // is never visited; and a route with no drawn edge in the junction has no walk at all. Each
     // run of such edges along a chain is drawn from the port of a drawn edge joined to the same
     // merged edge at the run's end, between two such ports, or where it has none, on its own.
-    const covered = new Set<string>();
+    // Indexed by route and edge, not keyed by a string: every merged edge of every crossing is
+    // marked at each zoom.
+    const routeAt = new Map<string, number>();
+    const routeIdx = (r: string) => {
+        let i = routeAt.get(r);
+        if (i === undefined) routeAt.set(r, (i = routeAt.size));
+        return i;
+    };
+    for (const r of g.routes.keys()) routeIdx(r);
+    for (const r of g.chains.keys()) routeIdx(r);
     for (const j of byRoot.values()) {
-        for (const t of j.transitions) for (const v of t.via) covered.add(`${t.route}|${v.edge}`);
-        for (const t of j.tails) for (const v of t.edges) covered.add(`${t.route}|${v.edge}`);
+        for (const t of j.transitions) routeIdx(t.route);
+        for (const t of j.tails) routeIdx(t.route);
+    }
+    const R = routeAt.size;
+    const covered = new Uint8Array(g.edges.length * R);
+    for (const j of byRoot.values()) {
+        for (const t of j.transitions) {
+            const r = routeAt.get(t.route)!;
+            for (const v of t.via) covered[v.edge * R + r] = 1;
+        }
+        for (const t of j.tails) {
+            const r = routeAt.get(t.route)!;
+            for (const v of t.edges) covered[v.edge * R + r] = 1;
+        }
     }
     const nodeOf = (s: {edge: number; forward: boolean}, start: boolean) =>
         s.forward === start ? g.edges[s.edge].a : g.edges[s.edge].b;
@@ -1329,14 +1362,15 @@ function buildJunctions(g: LineGraph, short: Uint8Array, edgeLen: Float64Array, 
         return -1;
     };
     for (const [route, chains] of g.chains) {
+        const r = routeAt.get(route)!;
         for (const chain of chains) {
             const steps = chain.steps;
             for (let i = 0; i < steps.length; i++) {
-                if (!short[steps[i].edge] || covered.has(`${route}|${steps[i].edge}`)) continue;
+                if (!short[steps[i].edge] || covered[steps[i].edge * R + r]) continue;
                 let k = i;
-                while (k < steps.length && short[steps[k].edge] && !covered.has(`${route}|${steps[k].edge}`)) k++;
+                while (k < steps.length && short[steps[k].edge] && !covered[steps[k].edge * R + r]) k++;
                 const run = steps.slice(i, k).map((s) => ({edge: s.edge, forward: s.forward}));
-                for (const s of run) covered.add(`${route}|${s.edge}`);
+                for (const s of run) covered[s.edge * R + r] = 1;
                 const first = run[0], last = run[run.length - 1];
                 const j = junctionOf[nodeOf(first, true)];
                 const u = portJoinedTo(j, route, nodeOf(first, true), first.edge);
