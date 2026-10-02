@@ -314,8 +314,8 @@ export class LaneLayer implements CustomLayerInterface {
     private layoutCache = new LayoutCache();
     private meshCache = new TessellateCache();
     /**
-     * The smallest tile containing the whole graph. Anchors are in its local
-     * units, so float32 keeps sub-pixel precision at high zoom.
+     * A tile the size of the graph, at its northwest corner. Anchors are in
+     * its local units, so float32 keeps sub-pixel precision at high zoom.
      */
     private tile = {z: 0, x: 0, y: 0};
     private origin: [number, number] = [0, 0];
@@ -692,11 +692,12 @@ export class LaneLayer implements CustomLayerInterface {
             this.unitsPerMercator = EXTENT;
             return;
         }
-        let z = 0;
-        for (; z < 22; z++) {
-            const n = Math.pow(2, z + 1);
-            if (Math.floor(minX * n) !== Math.floor(maxX * n) || Math.floor(minY * n) !== Math.floor(maxY * n)) break;
-        }
+        // The tile is sized to the graph, not chosen to contain it: anchors may run past its far
+        // edge, which the projection extends linearly. A float32 anchor rounds in proportion to
+        // its size in tile units, so a containing tile, which is z0 for a graph across lon 0 or
+        // the equator, put lanes 16 px off at z20.
+        const span = Math.max(maxX - minX, maxY - minY);
+        const z = span > 0 ? Math.max(0, Math.min(22, Math.floor(-Math.log2(span)))) : 22;
         const n = Math.pow(2, z);
         this.tile = {z, x: Math.min(n - 1, Math.floor(minX * n)), y: Math.min(n - 1, Math.floor(minY * n))};
         this.origin = [this.tile.x / n, this.tile.y / n];

@@ -103,3 +103,27 @@ describe('MapLibre 5.x and 6.x', () => {
         expect(calls.some((c) => c.name === 'drawElements')).toBe(true);
     });
 });
+
+describe('anchor precision', () => {
+    // The shader adds each lane's pixel offset to a float32 anchor in the
+    // reference tile's units, so the anchor's rounding is the lane's error.
+    const roundingAtZ20 = (lon: number, lat: number): number => {
+        const moved = fc.features.map((f: GeoJSON.Feature<GeoJSON.LineString>) => ({...f, geometry: {...f.geometry, coordinates: f.geometry.coordinates.map(([x, y]) => [x + 83.162 + lon, y - 42.805 + lat])}}));
+        const g = buildLineGraph(moved, {routeProperty: 'route_id', colorProperty: 'route_colour'});
+        const layer = new LaneLayer({id: 'lanes', graph: g, sizes: style}) as unknown as {origin: [number, number]; unitsPerMercator: number};
+        const unitsPerPx = layer.unitsPerMercator / (512 * Math.pow(2, 20));
+        let worst = 0;
+        for (const n of g.nodes) {
+            for (const u of [(n.x - layer.origin[0]) * layer.unitsPerMercator, (n.y - layer.origin[1]) * layer.unitsPerMercator]) {
+                worst = Math.max(worst, Math.abs(Math.fround(u) - u) / unitsPerPx);
+            }
+        }
+        return worst;
+    };
+
+    it('stays under a tenth of a pixel at z20 where the network straddles lon 0 or the equator', () => {
+        expect(roundingAtZ20(0, 51.5)).toBeLessThan(0.1);
+        expect(roundingAtZ20(0.01, 0)).toBeLessThan(0.1);
+        expect(roundingAtZ20(-90, 30)).toBeLessThan(0.1);
+    });
+});
