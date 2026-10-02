@@ -856,12 +856,14 @@ function assignDashPhase(st: ZoomState, route: string): void {
     }
     const travelEnd = (edge: number): 'a' | 'b' => (forwardOn.get(edge) === false ? 'a' : 'b');
     const pieces: LanePath[] = [];
-    // Per piece, whether its coordinates run with the route's travel.
-    const along = new Map<LanePath, boolean>();
+    // Per piece, by its index: whether its coordinates run with the route's travel.
+    const index = new Map<LanePath, number>();
+    const along: boolean[] = [];
     const add = (p: LanePath | null | undefined, withTravel: boolean) => {
-        if (p && !along.has(p)) {
-            along.set(p, withTravel);
+        if (p && !index.has(p)) {
+            index.set(p, pieces.length);
             pieces.push(p);
+            along.push(withTravel);
         }
     };
     const addLane = (edge: number) => add(lanePathOf(st, edge, route), forwardOn.get(edge) !== false);
@@ -890,71 +892,77 @@ function assignDashPhase(st: ZoomState, route: string): void {
         }
     }
     if (!pieces.length) return;
-    // Pieces by end point; snapped ends are exact copies, so the key is the coordinates as they are.
-    const atPoint = new Map<string, {piece: LanePath; end: 0 | 1}[]>();
-    const keyAt = (p: LanePath, end: 0 | 1) => {
-        const c = p.coords;
-        return end ? `${c[c.length - 2]},${c[c.length - 1]}` : `${c[0]},${c[1]}`;
-    };
-    for (const p of pieces) {
-        for (const end of [0, 1] as const) {
-            const k = keyAt(p, end);
-            const list = atPoint.get(k);
-            if (list) list.push({piece: p, end});
-            else atPoint.set(k, [{piece: p, end}]);
+    const n = pieces.length;
+    // Piece ends by end point, as `piece * 2 + end`. Snapped ends are exact copies, so the
+    // coordinates are the key as they are; a map per coordinate, since printing them as a
+    // string key cost more than the rest of the phase.
+    const atPoint = new Map<number, Map<number, number[]>>();
+    const endsAt: number[][] = new Array(2 * n);
+    for (let i = 0; i < n; i++) {
+        const c = pieces[i].coords;
+        for (let end = 0; end < 2; end++) {
+            const x = end ? c[c.length - 2] : c[0], y = end ? c[c.length - 1] : c[1];
+            let row = atPoint.get(x);
+            if (!row) atPoint.set(x, (row = new Map()));
+            let list = row.get(y);
+            if (!list) row.set(y, (list = []));
+            list.push(i * 2 + end);
+            endsAt[i * 2 + end] = list;
         }
     }
-    const length = new Map<LanePath, number>();
-    const lengthOf = (p: LanePath) => {
-        let l = length.get(p);
-        if (l === undefined) length.set(p, (l = polylineLength(p.coords)));
-        return l;
-    };
+    const length = new Float64Array(n).fill(-1);
     // Per piece, the distance at its first and last vertex, once reached.
-    const at = new Map<LanePath, [number, number]>();
-    const reach = (p: LanePath, end: 0 | 1, d: number) => {
-        const l = lengthOf(p);
+    const at = new Float64Array(2 * n);
+    const reached = new Uint8Array(n);
+    const reach = (i: number, end: number, d: number) => {
+        let l = length[i];
+        if (l < 0) length[i] = l = polylineLength(pieces[i].coords);
         // Distance grows with travel: from the first vertex along the piece, or toward it.
-        if (along.get(p)) at.set(p, end ? [d - l, d] : [d, d + l]);
-        else at.set(p, end ? [d + l, d] : [d, d - l]);
+        const d0 = along[i] ? (end ? d - l : d) : (end ? d + l : d);
+        at[i * 2] = d0;
+        at[i * 2 + 1] = along[i] ? (end ? d : d + l) : (end ? d : d - l);
+        reached[i] = 1;
     };
     // The first root is the first drawn piece of the route's first chain; each part the seams do
     // not join to one gets a root of its own, so every piece is reached.
-    let root = pieces[0];
+    let root = 0;
     chains: for (const chain of g.chains.get(route) ?? []) {
         for (const s of chain.steps) {
             const lane = st.lanePaths[laneKey(st, s.edge, route)];
             if (lane) {
-                root = lane;
+                root = index.get(lane)!;
                 break chains;
             }
         }
     }
-    for (let next = -1; next < pieces.length; next++) {
+    const queue: number[] = [];
+    for (let next = -1; next < n; next++) {
         if (next >= 0) {
-            if (at.has(pieces[next])) continue;
-            root = pieces[next];
+            if (reached[next]) continue;
+            root = next;
         }
         reach(root, 0, 0);
-        const queue = [root];
-        for (let i = 0; i < queue.length; i++) {
-            const p = queue[i];
-            const [d0, d1] = at.get(p)!;
-            for (const end of [0, 1] as const) {
-                for (const other of atPoint.get(keyAt(p, end))!) {
-                    if (at.has(other.piece)) continue;
-                    reach(other.piece, other.end, end ? d1 : d0);
-                    queue.push(other.piece);
+        queue.length = 0;
+        queue.push(root);
+        for (let q = 0; q < queue.length; q++) {
+            const i = queue[q];
+            for (let end = 0; end < 2; end++) {
+                const d = at[i * 2 + end];
+                for (const code of endsAt[i * 2 + end]) {
+                    const o = code >> 1;
+                    if (reached[o]) continue;
+                    reach(o, code & 1, d);
+                    queue.push(o);
                 }
             }
         }
         // Distances before the root are negative, and the sign is spoken for: it says which way
         // the piece runs. Shifting the whole part by one amount leaves every seam as it is.
         let least = 0;
-        for (const p of queue) least = Math.min(least, ...at.get(p)!);
-        for (const p of queue) {
-            const d0 = at.get(p)![0] - least;
-            p.startDistance = along.get(p) ? d0 : -d0;
+        for (const i of queue) least = Math.min(least, at[i * 2], at[i * 2 + 1]);
+        for (const i of queue) {
+            const d0 = at[i * 2] - least;
+            pieces[i].startDistance = along[i] ? d0 : -d0;
         }
     }
 }
