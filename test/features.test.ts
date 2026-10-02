@@ -202,6 +202,31 @@ describe('colors', () => {
         }
     });
 
+    it('reads a color the canvas keeps in its own notation from the pixel it paints', async () => {
+        const {parseColor} = await import('../src/render/tessellate');
+        // Browsers hand oklch() back as oklch(); only the painted pixel is in sRGB bytes.
+        const painted: Record<string, number[]> = {'oklch(70% 0.15 200)': [0, 185, 195, 255], 'oklch(70% 0.15 200 / 0.5)': [0, 185, 195, 128]};
+        class FakeCanvas {
+            getContext() {
+                let style = '#000000';
+                return {
+                    get fillStyle() { return style; },
+                    set fillStyle(v: string) { if (/^#[0-9a-f]{6}$/.test(v) || painted[v]) style = v; },
+                    clearRect() {},
+                    fillRect() {},
+                    getImageData: () => ({data: Uint8ClampedArray.from(painted[style] ?? [0, 0, 0, 0])}),
+                };
+            }
+        }
+        vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+        try {
+            expect([...parseColor('oklch(70% 0.15 200)')]).toEqual([0, 185, 195, 255]);
+            expect([...parseColor('oklch(70% 0.15 200 / 0.5)')]).toEqual([0, 185, 195, 128]);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
     it('changes the casing after construction, keeping its alpha', () => {
         const layer = new LaneLayer({id: 'lanes', graph, sizes: style, casingColor: '#000'});
         const casing = () => (layer as unknown as {casing: Float32Array | null}).casing;

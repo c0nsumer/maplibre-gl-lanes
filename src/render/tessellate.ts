@@ -133,10 +133,14 @@ class MeshBuilder {
     }
 }
 
-/** The browser's normal form of a CSS color; null without a canvas (Node) or for a non-color. */
+/**
+ * A CSS color as the browser reads it: its normal form when that is hex or `rgb()`, else
+ * the one pixel it paints, as `rgb()`. Colors such as `oklch()` and `color(display-p3 ...)`
+ * keep their own notation as fillStyle. Null without a canvas (Node) or for a non-color.
+ */
 function normalizeColor(css: string): string | null {
-    const ctx = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(1, 1).getContext('2d')
-        : typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
+    const ctx = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(1, 1).getContext('2d', {willReadFrequently: true})
+        : typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d', {willReadFrequently: true}) : null;
     if (!ctx) return null;
     // An invalid color leaves fillStyle as it was, so two different starts tell it apart.
     ctx.fillStyle = '#000000';
@@ -144,7 +148,12 @@ function normalizeColor(css: string): string | null {
     const a = ctx.fillStyle;
     ctx.fillStyle = '#ffffff';
     ctx.fillStyle = css;
-    return a === ctx.fillStyle && typeof a === 'string' ? a : null;
+    if (a !== ctx.fillStyle || typeof a !== 'string') return null;
+    if (/^(#|rgba?\()/i.test(a)) return a;
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, bl, al] = ctx.getImageData(0, 0, 1, 1).data;
+    return `rgba(${r}, ${g}, ${bl}, ${al / 255})`;
 }
 
 /** RGBA bytes of a CSS color; gray where it cannot be read. `normalized` stops a second canvas round. */
