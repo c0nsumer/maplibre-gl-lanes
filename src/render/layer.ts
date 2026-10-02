@@ -343,6 +343,8 @@ export class LaneLayer implements CustomLayerInterface {
     private fullFeatures: {graph: LineGraph; key: string; fc: GeoJSON.FeatureCollection} | null = null;
     /** By cache key, so repeat calls share one request. */
     private fullPending = new Map<string, Promise<GeoJSON.FeatureCollection>>();
+    /** Bumped by every setter a full-extent answer depends on, so one asked before it is not kept. */
+    private generation = 0;
     private highlight: string[] = [];
     private highlightStyle: ResolvedHighlight | null = null;
     /** Each group's bright split, kept until the mesh or the highlight changes. */
@@ -373,6 +375,7 @@ export class LaneLayer implements CustomLayerInterface {
     /** Replace the graph (e.g. after re-ordering or filtering routes). */
     setGraph(graph: LineGraph): void {
         this.graph = graph;
+        this.generation++;
         this.layoutCache.clear();
         this.meshCache.clear();
         this.fullFeatures = null;
@@ -390,6 +393,7 @@ export class LaneLayer implements CustomLayerInterface {
     setSizes(sizes: SizesAtZoom): void {
         requireSizesFunction(sizes);
         this.sizes = sizes;
+        this.generation++;
         this.fullFeatures = null;
         this.fullPending.clear();
         this.dirty = true;
@@ -399,6 +403,10 @@ export class LaneLayer implements CustomLayerInterface {
     /** Change or remove the per-edge styling (see `LaneLayerOptions.laneStyle`). */
     setLaneStyle(laneStyle: LaneStyle | null): void {
         this.laneStyle = laneStyle;
+        this.generation++;
+        // The caches key on the function, and the same function may now answer differently.
+        this.layoutCache.clear();
+        this.meshCache.clear();
         this.fullFeatures = null;
         this.fullPending.clear();
         this.looksDirty = true;
@@ -522,13 +530,18 @@ export class LaneLayer implements CustomLayerInterface {
         if (waiting) return waiting;
         const wanted = this.requestFullFeatures(z, routes, key);
         this.fullPending.set(key, wanted);
-        void wanted.then(() => this.fullPending.delete(key), () => this.fullPending.delete(key));
+        // A setter may have cleared this entry and a newer request taken the key.
+        const settle = () => {
+            if (this.fullPending.get(key) === wanted) this.fullPending.delete(key);
+        };
+        void wanted.then(settle, settle);
         return wanted;
     }
 
     private async requestFullFeatures(z: number, routes: string[] | null, key: string): Promise<GeoJSON.FeatureCollection> {
         let graph = this.graph;
-        // A second try covers a worker that lost the graph, or a graph replaced meanwhile.
+        let generation = this.generation;
+        // A second try covers a worker that lost the graph, or a graph or style replaced meanwhile.
         for (let attempt = 0; attempt < 2; attempt++) {
             const req = this.layoutRequest(z, null, 'full', routes);
             const sent = sendToWorker<LayoutResponse>(req);
@@ -545,8 +558,9 @@ export class LaneLayer implements CustomLayerInterface {
                 console.warn('maplibre-gl-lanes: lane features in the worker failed, building on this thread:', res.error);
                 break;
             }
-            if (res.session !== this.session || graph !== this.graph) {
+            if (res.session !== this.session || graph !== this.graph || generation !== this.generation) {
                 graph = this.graph;
+                generation = this.generation;
                 continue;
             }
             const fc = this.featureCollection(unpackPaths(res.paths), res.scale, graph);

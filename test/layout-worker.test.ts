@@ -530,3 +530,53 @@ describe('a new graph before its first build lands', () => {
         });
     }
 });
+
+describe('a setter called while a full-extent answer is out', () => {
+    const big = () => ({spacing: 20, width: 6, casingWidth: 1});
+
+    it('does not keep the answer asked before setSizes', async () => {
+        withFakeWorker();
+        const layer = new LaneLayer({id: 'lanes', graph, sizes: style});
+        layer.onAdd(mapStub(16) as never, recordingGl().gl);
+        const early = layer.laneFeaturesAsync({zoom: 16, extent: 'full'});
+        layer.setSizes(big);
+        await early;
+        const later = await layer.laneFeaturesAsync({zoom: 16, extent: 'full'});
+        const ref = new LaneLayer({id: 'ref', graph, sizes: big, worker: false});
+        ref.onAdd(mapStub(16) as never, recordingGl().gl);
+        expect(later).toEqual(ref.laneFeatures({zoom: 16, extent: 'full'}));
+    });
+
+    it('does not keep the answer asked before setLaneStyle', async () => {
+        withFakeWorker();
+        const layer = new LaneLayer({id: 'lanes', graph, sizes: style});
+        layer.onAdd(mapStub(16) as never, recordingGl().gl);
+        const early = layer.laneFeaturesAsync({zoom: 16, extent: 'full'});
+        layer.setLaneStyle(() => ({color: '#123456'}));
+        await early;
+        const later = await layer.laneFeaturesAsync({zoom: 16, extent: 'full'});
+        for (const f of later.features) expect(f.properties!.color).toBe('#123456');
+    });
+});
+
+describe('setLaneStyle with the same function', () => {
+    for (const worker of [false, true]) {
+        it(`reads the callback again (worker: ${worker})`, async () => {
+            if (worker) withFakeWorker();
+            let color = '#ff0000';
+            const laneStyle = () => ({color});
+            const layer = new LaneLayer({id: 'lanes', graph, sizes: style, laneStyle, worker});
+            const {gl} = recordingGl();
+            layer.onAdd(mapStub(16) as never, gl);
+            layer.render(gl, args);
+            await tick();
+            expect(layer.getLayout()!.paths[0].look.color).toBe('#ff0000');
+            color = '#00ff00';
+            layer.setLaneStyle(laneStyle);
+            layer.render(gl, args);
+            await tick();
+            layer.render(gl, args);
+            expect(layer.getLayout()!.paths[0].look.color).toBe('#00ff00');
+        });
+    }
+});
