@@ -478,3 +478,55 @@ describe('a worker that dies or is disposed', () => {
         warn.mockRestore();
     });
 });
+
+describe('a new graph before its first build lands', () => {
+    // One route alone spans less of the map, so its graph gets a smaller tile.
+    const oneRoute = () => {
+        const first = fc.features[0].properties.route_id;
+        const g = buildLineGraph(fc.features.filter((f: GeoJSON.Feature) => f.properties!.route_id === first), {routeProperty: 'route_id', colorProperty: 'route_colour', nameProperty: 'route_name'});
+        orderLanes(g);
+        return g;
+    };
+
+    for (const worker of [false, true]) {
+        it(`answers queries from the graph that was laid out (worker: ${worker})`, async () => {
+            if (worker) withFakeWorker();
+            // The same features reversed: the same routes on edges numbered differently.
+            const g2 = buildLineGraph([...fc.features].reverse(), {routeProperty: 'route_id', colorProperty: 'route_colour', nameProperty: 'route_name'});
+            orderLanes(g2);
+            const layer = new LaneLayer({id: 'lanes', graph, sizes: style, worker});
+            const {gl} = recordingGl();
+            layer.onAdd(mapStub(16) as never, gl);
+            layer.render(gl, args);
+            await tick();
+            layer.setGraph(g2);
+            const features = layer.laneFeatures().features;
+            expect(features.length).toBeGreaterThan(0);
+            for (const f of features) expect(f.properties!.routes).toContain(f.properties!.route);
+        });
+
+        it(`draws the old mesh in the old graph's tile (worker: ${worker})`, async () => {
+            if (worker) withFakeWorker();
+            const tiles: {z: number}[] = [];
+            const capture = {...args, getProjectionData: (p: {tileID: {canonical: {z: number}}}) => {
+                tiles.push(p.tileID.canonical);
+                return (args.getProjectionData as (p: object) => unknown)(p);
+            }} as unknown as LaneRenderArgs;
+            const layer = new LaneLayer({id: 'lanes', graph, sizes: style, worker});
+            const {gl} = recordingGl();
+            layer.onAdd(mapStub(16) as never, gl);
+            layer.render(gl, capture);
+            await tick();
+            layer.render(gl, capture);
+            const before = tiles[tiles.length - 1].z;
+            layer.setGraph(oneRoute());
+            // With a worker this frame still draws the old mesh; without, it builds the new one.
+            layer.render(gl, capture);
+            const drawn = tiles[tiles.length - 1].z;
+            if (worker) expect(drawn).toBe(before);
+            await tick();
+            layer.render(gl, capture);
+            expect(tiles[tiles.length - 1].z).toBeGreaterThan(before);
+        });
+    }
+});

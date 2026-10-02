@@ -320,6 +320,12 @@ export class LaneLayer implements CustomLayerInterface {
     private tile = {z: 0, x: 0, y: 0};
     private origin: [number, number] = [0, 0];
     private unitsPerMercator = EXTENT;
+    /**
+     * What the uploaded mesh and the last build were made from. After `setGraph` the old
+     * mesh keeps drawing until the new build lands, so it needs its own tile, and queries
+     * on the old layout need the old graph's edges.
+     */
+    private builtWith: {graph: LineGraph; tile: {z: number; x: number; y: number}; unitsPerMercator: number} | null = null;
     private dirty = true;
     private graph: LineGraph;
     private sizes: SizesAtZoom;
@@ -496,7 +502,7 @@ export class LaneLayer implements CustomLayerInterface {
                 coords.push([x * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI]);
             }
             if (coords.length < 2) continue;
-            features.push(this.laneFeature(p, coords));
+            features.push(this.laneFeature(p, coords, this.builtWith?.graph ?? this.graph));
         }
         return {type: 'FeatureCollection', features};
     }
@@ -543,17 +549,17 @@ export class LaneLayer implements CustomLayerInterface {
                 graph = this.graph;
                 continue;
             }
-            const fc = this.featureCollection(unpackPaths(res.paths), res.scale);
+            const fc = this.featureCollection(unpackPaths(res.paths), res.scale, graph);
             this.fullFeatures = {graph, key, fc};
             return fc;
         }
         return this.fullLaneFeatures({zoom: z, routes: routes ?? undefined, extent: 'full'});
     }
 
-    private laneFeature(p: LanePath, coords: [number, number][]): GeoJSON.Feature {
-        const meta = this.graph.routes.get(p.route);
+    private laneFeature(p: LanePath, coords: [number, number][], graph: LineGraph): GeoJSON.Feature {
+        const meta = graph.routes.get(p.route);
         const edge = p.edge;
-        const e = this.graph.edges[edge];
+        const e = graph.edges[edge];
         if (p.travel === -1) coords.reverse();
         const properties: GeoJSON.GeoJsonProperties = {
             ...e?.properties,
@@ -576,12 +582,12 @@ export class LaneLayer implements CustomLayerInterface {
         const cached = this.fullFeatures;
         if (cached && cached.graph === this.graph && cached.key === key) return cached.fc;
         const layout = layoutAtZoom(this.graph, z, this.sizes, {smooth: this.smooth, openFolds: this.openFolds, routes: routes ?? undefined, laneStyle: this.laneStyle ?? undefined});
-        const fc = this.featureCollection(layout.paths, layout.scale);
+        const fc = this.featureCollection(layout.paths, layout.scale, this.graph);
         this.fullFeatures = {graph: this.graph, key, fc};
         return fc;
     }
 
-    private featureCollection(paths: LanePath[], scale: number): GeoJSON.FeatureCollection {
+    private featureCollection(paths: LanePath[], scale: number, graph: LineGraph): GeoJSON.FeatureCollection {
         const features: GeoJSON.Feature[] = [];
         for (const p of paths) {
             const coords: [number, number][] = [];
@@ -591,7 +597,7 @@ export class LaneLayer implements CustomLayerInterface {
                 coords.push([x * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI]);
             }
             if (coords.length < 2) continue;
-            features.push(this.laneFeature(p, coords));
+            features.push(this.laneFeature(p, coords, graph));
         }
         return {type: 'FeatureCollection', features};
     }
@@ -638,10 +644,11 @@ export class LaneLayer implements CustomLayerInterface {
         }
         if (!best) return null;
         const edgeId = best.edge;
-        const e = this.graph.edges[edgeId];
+        const graph = this.builtWith?.graph ?? this.graph;
+        const e = graph.edges[edgeId];
         return {
             route: best.route,
-            name: this.graph.routes.get(best.route)?.name,
+            name: graph.routes.get(best.route)?.name,
             distancePx: Math.sqrt(bestD2),
             lngLat: mercatorToLngLat(bestX / nowScale, bestY / nowScale),
             kind: best.kind,
@@ -950,6 +957,8 @@ export class LaneLayer implements CustomLayerInterface {
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ibo);
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.DYNAMIC_DRAW);
         this.mesh = mesh;
+        // Both callers upload only builds of the current graph: onLayout drops other sessions.
+        this.builtWith = {graph: this.graph, tile: this.tile, unitsPerMercator: this.unitsPerMercator};
     }
 
     render(anyGl: AnyGlContext, args: LaneRenderArgs): void {
@@ -959,7 +968,8 @@ export class LaneLayer implements CustomLayerInterface {
         const zoom = this.map.getZoom();
         if (this.dirty || !this.built || !this.serves(this.built, zoom)) this.rebuild(zoom);
         const mesh = this.mesh;
-        if (!mesh || !mesh.indexCount) return;
+        const frame = this.builtWith;
+        if (!mesh || !mesh.indexCount || !frame) return;
 
         const entry = this.programFor(gl, args.shaderData);
         if (!entry) return;
@@ -967,7 +977,7 @@ export class LaneLayer implements CustomLayerInterface {
         // MapLibre 6 passes `getProjectionData`; 5.x has it on the transform.
         // Both read only `canonical` and `wrap`, so a literal tile id serves.
         type ProjectionData = ReturnType<CustomRenderMethodInput['getProjectionData']>;
-        const tileID = {canonical: this.tile, wrap: 0};
+        const tileID = {canonical: frame.tile, wrap: 0};
         const pd: ProjectionData = args.getProjectionData
             ? args.getProjectionData({tileID, applyGlobeMatrix: true})
             : (this.map as unknown as {transform: {getProjectionData: (p: object) => ProjectionData}}).transform
@@ -979,7 +989,7 @@ export class LaneLayer implements CustomLayerInterface {
         const built = this.built ? this.built.zoom : zoom;
         const dashStyle = built === zoom ? style : checkedSizes(this.sizes, built);
         const alongScale = Math.pow(2, zoom - built);
-        const unitsPerPx = this.unitsPerMercator / (512 * Math.pow(2, zoom));
+        const unitsPerPx = frame.unitsPerMercator / (512 * Math.pow(2, zoom));
 
         gl.useProgram(program);
         gl.bindVertexArray(vao);
@@ -1123,7 +1133,7 @@ export class LaneLayer implements CustomLayerInterface {
     private drawRoute(gl: WebGL2RenderingContext, uniforms: Record<string, WebGLUniformLocation | null>, run: number[], style: {width: number; casingWidth: number}, dashStyle: {width: number}, aa: number, once: boolean,
         marks: boolean, opacity: number, opacities: {dimmed: number; bright: number; split: (RunSplit | null)[]} | null = null): void {
         const mesh = this.mesh!;
-        const meta = this.graph.routes.get(mesh.groupRoutes[run[0]]);
+        const meta = (this.builtWith?.graph ?? this.graph).routes.get(mesh.groupRoutes[run[0]]);
         const periodOf = (look: LaneLook): [number, number] =>
             look.dash ? [look.dash[0] * dashStyle.width, look.dash[1] * dashStyle.width] : [0, 0];
         // A pass is one side of the bright split, or the whole route when nothing is bright.
