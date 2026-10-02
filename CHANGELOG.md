@@ -10,9 +10,12 @@ follows Keep a Changelog, and the project uses semantic versioning.
 - Lanes stay sharp at high zoom for a network that crosses lon 0 or the
   equator, such as one in London. They wobbled from z16 and broke up by
   z20.
-- An opaque fill layer above the lane layer now covers the lanes. With a
-  translucent casing or `opacity` below 1, a lane can still show through
-  where it overlaps another route's lanes (see docs/api.md).
+- An opaque fill layer above the lane layer now covers the lanes, with
+  every look. A translucent casing, `opacity` below 1 and a highlight's
+  `dim` are drawn into an offscreen buffer of the layer's own and laid on
+  the map once, so the marks that blend them once per pixel never touch
+  the map's depth buffer. Blended pixels of those looks can differ from
+  before by up to 3 of 255 from the 8-bit buffer in between.
 - A lane no longer shoots a spike far across the map at low zoom. On a
   twisty trail whose hairpins shrink to a fraction of a pixel, the inside
   corner of a bend could land kilometers away.

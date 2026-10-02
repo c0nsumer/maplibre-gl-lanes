@@ -201,14 +201,24 @@ call per pass. On RAMBA, in a 390 by 844 view at z15.5, that is 28 draw
 calls and about 0.05 ms of JavaScript a frame.
 
 A translucent casing costs more. The casing is then blended once per
-pixel (see `docs/algorithms.md`, rendering). That takes a second draw of
-each casing, a colorless draw after each fill, and one colorless draw of
-the whole mesh at the start of the frame. The same view takes 47 draw
-calls. The JavaScript time does not change. An opaque casing on an opaque
-layer takes none of this.
+pixel (see `docs/algorithms.md`, rendering). The lanes are drawn into an
+offscreen color and depth buffer the size of the drawing buffer, 8 bytes
+per device pixel, which is cleared first and laid on the map once with a
+full-screen draw. In it, each casing is drawn twice and a colorless draw
+follows each fill. The same view takes 47 draw calls and one clear. The
+JavaScript time does not change. `opacity` below 1 and a highlight's
+`dim` cost the same. An opaque casing on an opaque layer takes none of
+this: it draws straight onto the map and allocates nothing. In headless
+Chromium on the desktop machine, with the software renderer, RAMBA at z12
+in a 600 by 400 view takes 18 ms per render call with the translucent
+casing and 23 ms at `opacity` 0.6, measured with `gl.finish`; the opaque
+look takes under a millisecond.
 
 On a phone the extra passes cost a few milliseconds of GPU time and no
-frames. `scripts/draw-probe.js` draws one view with the casing made opaque
+frames. The figures below were taken when the marks lived in the map's
+depth buffer and a colorless draw of the whole mesh stood in for the
+clear and the full-screen draw; the same probe measures the offscreen
+buffer. `scripts/draw-probe.js` draws one view with the casing made opaque
 and with the casing as the page has it, and makes the GPU finish before
 each reading. These figures are from the deployed RAMBA map with a casing of
 `rgba(0, 0, 0, 0.5)`, on a Pixel 8 in Chrome (Mali-G715, a 1078 by 2121

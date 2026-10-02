@@ -118,14 +118,14 @@ const DEPTH_GAP = 1 / (1 << 16);
 /**
  * A translucent casing is blended once through a per-pixel "casing showing"
  * mark that a casing sets and tests and a fill clears (docs/algorithms.md,
- * Rendering). The mark lives in the depth buffer, never the stencil buffer:
- * MapLibre reuses its tile clipping masks there across layers. Its values
- * sit in the gap behind this layer's depth, nearer than any layer below and
- * farther than any above, offsets from the layer's depth in units of the
- * gap. Clearing writes a farther value over a nearer one, which no depth
- * test can keep off an opaque fill above, so where one route's lanes cross
- * another's under such a fill, the later one shows through. Only full
- * coverage sets the mark; marking soft edges leaves pale threads.
+ * Rendering). The mark is a depth value, offsets from this layer's depth in
+ * units of the gap, in a depth buffer of the layer's own: a translucent
+ * look is drawn into an offscreen buffer and laid on the map once (see
+ * `Offscreen`). Clearing a mark writes a farther value over a nearer one,
+ * which in MapLibre's depth buffer would lift an opaque fill above off the
+ * lanes under it. Never the stencil buffer: MapLibre reuses its tile
+ * clipping masks there across layers. Only full coverage sets the mark;
+ * marking soft edges leaves pale threads.
  */
 const DEPTH_CLEAR = 4 / 8;
 const DEPTH_MARK = 3 / 8;
@@ -138,8 +138,48 @@ const DEPTH_MARK = 3 / 8;
  */
 const DEPTH_FILL = 2 / 8;
 const DEPTH_FILL_OVER = 1 / 8;
-/** Two depth values a hair apart need more than the 16 bits some buffers have. */
-const MIN_DEPTH_BITS = 24;
+
+/**
+ * The offscreen color and depth a translucent look is drawn into, at the size of the drawing
+ * buffer, and the program that lays it on the map: one triangle over the viewport, tested at
+ * the layer's depth against MapLibre's depth buffer, so an opaque layer above still covers the
+ * lanes, and MapLibre's depth is never written. Shared by the lane layers on one context, which
+ * draw one after the other; freed when the last of them is removed.
+ */
+interface Offscreen {
+    framebuffer: WebGLFramebuffer;
+    color: WebGLTexture;
+    depth: WebGLRenderbuffer;
+    width: number;
+    height: number;
+}
+interface Composite {
+    program: WebGLProgram;
+    vao: WebGLVertexArrayObject;
+    color: WebGLUniformLocation | null;
+}
+interface OffscreenShare {
+    users: number;
+    target: Offscreen | null;
+    /** Null once it failed to build, so it is not tried every frame. */
+    composite: Composite | null | undefined;
+}
+const offscreens = new WeakMap<WebGL2RenderingContext, OffscreenShare>();
+
+const COMPOSITE_VERTEX_SHADER = `#version 300 es
+void main() {
+    vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0);
+    gl_Position = vec4(p, 0.0, 1.0);
+}`;
+const COMPOSITE_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+uniform sampler2D u_color;
+out vec4 fragColor;
+void main() {
+    vec4 c = texelFetch(u_color, ivec2(gl_FragCoord.xy), 0);
+    if (c.a == 0.0) discard;
+    fragColor = c;
+}`;
 /** Values of `u_cover`: which fragments a draw keeps, by pixel coverage. */
 const COVER_ALL = 0;
 const COVER_FULL = 1;
@@ -304,7 +344,6 @@ export class LaneLayer implements CustomLayerInterface {
 
     private map: LaneMap | null = null;
     private gl: WebGL2RenderingContext | null = null;
-    private canMark = false;
     /** Per projection variant; null for one that failed to build, so it is not tried every frame. */
     private programs = new Map<string, {program: WebGLProgram; vao: WebGLVertexArrayObject; uniforms: Record<string, WebGLUniformLocation | null>} | null>();
     private vbo: WebGLBuffer | null = null;
@@ -725,7 +764,9 @@ export class LaneLayer implements CustomLayerInterface {
         const gl = anyGl;
         this.map = map;
         this.gl = gl;
-        this.canMark = (gl.getParameter(gl.DEPTH_BITS) as number) >= MIN_DEPTH_BITS;
+        const share = offscreens.get(gl);
+        if (share) share.users++;
+        else offscreens.set(gl, {users: 1, target: null, composite: undefined});
         if (map.getTerrain()) {
             console.warn('maplibre-gl-lanes: 3D terrain is enabled; lanes are drawn at ' +
                 'sea level and will be hidden under raised terrain.');
@@ -751,6 +792,15 @@ export class LaneLayer implements CustomLayerInterface {
         this.programs.clear();
         for (const b of [this.vbo, this.cbo, this.ibo]) if (b) gl.deleteBuffer(b);
         this.vbo = this.cbo = this.ibo = null;
+        const share = offscreens.get(gl);
+        if (share && --share.users <= 0) {
+            if (share.target) releaseOffscreen(gl, share.target);
+            if (share.composite) {
+                gl.deleteProgram(share.composite.program);
+                gl.deleteVertexArray(share.composite.vao);
+            }
+            offscreens.delete(gl);
+        }
         this.layoutCache.clear();
         this.meshCache.clear();
         this.closeSession();
@@ -1071,19 +1121,22 @@ export class LaneLayer implements CustomLayerInterface {
         const dimmed = !!hl && hl.dim < 1;
         const translucent = this.opacity < 1 || dimmed;
         // Only a casing that lets the map through needs blending once.
-        const once = this.canMark && !!this.casing && (this.casing[3] < 1 || translucent);
-        const marks = once || (this.canMark && translucent);
-        if (marks) {
-            // Clear under every casing pixel, except where a layer above is nearer.
+        let once = !!this.casing && (this.casing[3] < 1 || translucent);
+        let marks = once || translucent;
+        // The marks need a depth buffer of the layer's own; without one the look blends as it comes.
+        const offscreen = marks ? acquireOffscreen(gl) : null;
+        if (!offscreen) once = marks = false;
+        let mapFramebuffer: WebGLFramebuffer | null = null;
+        if (offscreen) {
+            mapFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+            gl.bindFramebuffer(gl.FRAMEBUFFER, offscreen.target.framebuffer);
+            // Depth 1 is no mark anywhere: every mark value lies nearer. A clear obeys the depth
+            // mask, which MapLibre leaves off for a 2D layer.
+            gl.clearColor(0, 0, 0, 0);
+            gl.clearDepth(1);
             gl.depthMask(true);
-            this.depthAt(gl, DEPTH_CLEAR);
-            gl.colorMask(false, false, false, false);
-            gl.uniform1f(uniforms.u_outset, style.width / 2 + style.casingWidth + aa);
-            gl.uniform4fv(uniforms.u_override, this.casing ?? [0, 0, 0, 1]);
-            gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0);
-            gl.colorMask(true, true, true, true);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
             gl.depthMask(false);
-            this.depthAt(gl, 0);
         }
         const split = dimmed && hl!.bright.size > 0 ? this.splitFor(mesh, hl!) : null;
         const restOpacity = dimmed ? this.opacity * hl!.dim : this.opacity;
@@ -1125,6 +1178,19 @@ export class LaneLayer implements CustomLayerInterface {
                 lift();
             }
             for (const run of liftedRuns) this.drawRoute(gl, uniforms, run, style, dashStyle, aa, once, marks, this.opacity);
+        }
+        if (offscreen) {
+            // Laid on the map once, at the layer's depth, under whatever MapLibre drew nearer.
+            gl.bindFramebuffer(gl.FRAMEBUFFER, mapFramebuffer);
+            gl.useProgram(offscreen.composite.program);
+            gl.bindVertexArray(offscreen.composite.vao);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, offscreen.target.color);
+            gl.uniform1i(offscreen.composite.color, 0);
+            gl.depthFunc(gl.LEQUAL);
+            gl.depthMask(false);
+            this.depthAt(gl, 0);
+            gl.drawArrays(gl.TRIANGLES, 0, 3);
         }
         // As MapLibre set it, since the next layer may be another custom layer.
         gl.depthFunc(gl.LEQUAL);
@@ -1338,6 +1404,73 @@ function segNearest(px: number, py: number, ax: number, ay: number, bx: number, 
 
 function isWebGL2(gl: AnyGlContext): gl is WebGL2RenderingContext {
     return typeof (gl as WebGL2RenderingContext).createVertexArray === 'function';
+}
+
+/** The context's offscreen target at the drawing buffer's size, made or remade as needed, or null. */
+function acquireOffscreen(gl: WebGL2RenderingContext): {target: Offscreen; composite: Composite} | null {
+    const share = offscreens.get(gl);
+    if (!share) return null;
+    const width = gl.drawingBufferWidth, height = gl.drawingBufferHeight;
+    let target = share.target;
+    // A lost context takes its objects with it; `isFramebuffer` says so once it is back.
+    const stale = target && (target.width !== width || target.height !== height || !gl.isFramebuffer(target.framebuffer));
+    if (target && stale) {
+        releaseOffscreen(gl, target);
+        target = share.target = null;
+    }
+    if (!target) target = share.target = createOffscreen(gl, width, height);
+    if (share.composite === undefined) share.composite = buildComposite(gl);
+    return target && share.composite ? {target, composite: share.composite} : null;
+}
+
+function createOffscreen(gl: WebGL2RenderingContext, width: number, height: number): Offscreen | null {
+    const color = gl.createTexture();
+    const depth = gl.createRenderbuffer();
+    const framebuffer = gl.createFramebuffer();
+    if (!color || !depth || !framebuffer) return null;
+    gl.bindTexture(gl.TEXTURE_2D, color);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+    // Two depth values a hair apart need more than the 16 bits some buffers have.
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, width, height);
+    const bound = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, color, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, bound);
+    const target = {framebuffer, color, depth, width, height};
+    if (complete) return target;
+    releaseOffscreen(gl, target);
+    return null;
+}
+
+function releaseOffscreen(gl: WebGL2RenderingContext, target: Offscreen): void {
+    gl.deleteFramebuffer(target.framebuffer);
+    gl.deleteTexture(target.color);
+    gl.deleteRenderbuffer(target.depth);
+}
+
+function buildComposite(gl: WebGL2RenderingContext): Composite | null {
+    try {
+        const program = gl.createProgram()!;
+        gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, COMPOSITE_VERTEX_SHADER));
+        gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, COMPOSITE_FRAGMENT_SHADER));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            gl.deleteProgram(program);
+            return null;
+        }
+        // The triangle comes from the vertex index, so the array object holds nothing.
+        const vao = gl.createVertexArray()!;
+        return {program, vao, color: gl.getUniformLocation(program, 'u_color')};
+    } catch {
+        return null;
+    }
 }
 
 function rgba(c: Uint8Array): Float32Array {

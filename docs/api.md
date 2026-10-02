@@ -285,14 +285,13 @@ their casings overlap, as on the outside of the bundle. The same holds when
 `opacity` is below 1. A lane below full opacity, through `opacity` or a
 highlight's `dim`, is also blended once per pixel. It does not brighten
 where its own pieces overlap. Lanes of different routes still blend where
-they cross. The layer uses the depth buffer for this, and needs
-one of at least 24 bits. It never writes the stencil buffer. An opaque
-fill layer above the lane layer covers the lanes. One consequence applies
-if the casing is translucent or `opacity` is below 1. Clearing the mark
-then overwrites the fill's depth under each route's lanes. Where a later
-route's lanes overlap that route, they show over the fill, and so does a
-translucent layer between the two. Put the lane layer above the basemap's
-fills.
+they cross. A translucent look is drawn into an offscreen buffer of the
+layer's own, the size of the map's drawing buffer, and laid on the map
+once. The layer never writes the map's depth or stencil buffers. An opaque
+fill layer above the lane layer covers the lanes, whatever the look. The
+offscreen buffer is shared by the lane layers on one map and freed when
+the last of them is removed. With an opaque casing and `opacity` 1 the
+layer draws straight onto the map and allocates nothing.
 
 `zoomEpsilon` bounds how stale the geometry may get between rebuilds.
 Between them the mesh stays pixel-exact for lane spacing and widths; only
