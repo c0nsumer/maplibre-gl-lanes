@@ -5,6 +5,13 @@ follows Keep a Changelog, and the project uses semantic versioning.
 
 ## Unreleased
 
+### Changed
+
+- Layouts at overview zooms are faster, by up to about a sixth at z9 to
+  z11.
+- The layer no longer waits on the GPU in every frame to read its depth or
+  to check for a lost context, so a frame takes less of the main thread.
+
 ### Fixed
 
 - Lanes stay sharp at high zoom for a network that crosses lon 0 or the

@@ -11,7 +11,7 @@ the fixtures in `test/fixtures`. They use the demo's lane widths: a 2 px
 fill at z10, growing to 7 px at z18, with spacing one pixel wider. Device
 figures name their hardware where they appear. Every figure comes from
 the code as it stands, except the phone figures in "The draw", which were
-taken at 1.0.0. The draw has not changed since. "Reproducing", at the
+taken at 1.0.0. The draw has changed since, as that section says. "Reproducing", at the
 end, says how to take them again on your own data and your own device.
 
 ## The fixtures
@@ -158,10 +158,11 @@ as the uncached one.
 A dashed route adds to the first build at a zoom. Its dash phase is read
 off every piece of the route, in view or not, so that the phase does not
 move with the viewport, and that builds every piece of the route. With
-all 14 RAMBA routes dashed, the median rebuild of the third row goes from
-4.0 ms to 12.9 ms and the 90th percentile from 10.2 ms to 20.1 ms. With 4
-of the 14 dashed, the median is 4.2 ms. The pan rows do not change: the
-phase is kept with the zoom.
+all 14 RAMBA routes dashed (`--dashed 14` on the benchmark), the median
+rebuild of the third row goes from 3.1 ms to 12.0 ms and the 90th
+percentile from 6.6 ms to 19.7 ms. With the first 4 of the 14 dashed, the
+median is 7.6 ms. The pan rows do not change: the phase is kept with the
+zoom.
 
 ## Off the render thread
 
@@ -190,8 +191,8 @@ spacing and width at the current zoom, since it is anchored (see
 Packing an answer costs the worker about a quarter of a cached rebuild,
 which is a fraction of a millisecond. The same pan run through the
 worker's message handler, which adds packing the paths and copying the
-buffers out, takes 154 ms over the 92 rebuilds at z15 instead of 120 ms,
-and 111 ms over the 360 rebuilds at z16 instead of 89 ms.
+buffers out, takes about a quarter longer at z15 and at z16 than the
+cached rows of the table above (`--worker` on the benchmark).
 
 ## The draw
 
@@ -334,8 +335,8 @@ from the solved graph with the route on the most edges hidden. The layout
 and mesh table comes from `node scripts/run-ts.mjs scripts/bench-layout.ts`,
 which lays each fixture out five times per zoom and keeps the median. The
 pan table comes from `node scripts/run-ts.mjs scripts/bench-rebuild.ts`,
-with `--no-cache` for the uncached columns and `--worker` for what a
-rebuild costs the worker; the pan table holds the median of three runs
+with `--no-cache` for the uncached columns, `--worker` for what a
+rebuild costs the worker and `--dashed N` for dashed routes; the pan table holds the median of three runs
 of it. Run all three from the repo root.
 
 To check the lane ordering against the best possible order, run

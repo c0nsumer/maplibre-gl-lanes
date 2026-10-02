@@ -7,10 +7,12 @@
  * and reports each rebuild's cost. The pinch pass moves the zoom too, which
  * resets the cache every step: the worst case for caching.
  *
- *   node scripts/run-ts.mjs scripts/bench-rebuild.ts [fixture] [--no-cache] [--worker]
+ *   node scripts/run-ts.mjs scripts/bench-rebuild.ts [fixture] [--no-cache] [--worker] [--dashed N]
  *
  * `--worker` goes through the worker's message handler, adding the path
  * packing and mesh copy for transfer: the worker's cost per rebuild.
+ * `--dashed N` dashes the first N routes, whose dash phase is read off
+ * every piece of the route at each new zoom.
  *
  * Run it from the repo root: fixtures are read relative to the working
  * directory.
@@ -27,9 +29,11 @@ import {handleLayoutRequest} from '../src/worker/lanes.worker';
 import type {Bounds} from '../src/core/geometry';
 
 const args = process.argv.slice(3);
-const fixture = args.find((a) => !a.startsWith('--')) ?? 'ramba.src.geojson';
+const fixture = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--dashed') ?? 'ramba.src.geojson';
 const useCache = !args.includes('--no-cache');
 const asWorker = args.includes('--worker');
+const dashedAt = args.indexOf('--dashed');
+const dashed = dashedAt >= 0 ? Number(args[dashedAt + 1]) : 0;
 
 // The demo's style: spacing one pixel wider than the fill.
 const styleAt: SizesAtZoom = (z: number) => {
@@ -47,6 +51,7 @@ const fc = JSON.parse(readFileSync(`test/fixtures/${fixture}`, 'utf8'));
 const graph = buildLineGraph(fc.features, {routeProperty: 'route_id', colorProperty: 'route_colour', nameProperty: 'route_name'});
 orderLanes(graph);
 stabilizeLanes(graph, {});
+for (const meta of [...graph.routes.values()].slice(0, dashed)) meta.dash = [2, 1];
 
 // Mercator bounding box of the network, for the pan path.
 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -163,7 +168,7 @@ function report(label: string, rs: Rebuild[]): void {
 }
 
 console.log(`${fixture}: ${graph.nodes.length} nodes, ${graph.edges.length} edges, ${graph.routes.size} routes; ` +
-    `${VIEW_W}x${VIEW_H} viewport, cache ${useCache ? 'on' : 'off'}${asWorker ? ', through the worker handler' : ''}`);
+    `${VIEW_W}x${VIEW_H} viewport, cache ${useCache ? 'on' : 'off'}${dashed ? `, ${dashed} routes dashed` : ''}${asWorker ? ', through the worker handler' : ''}`);
 
 for (const zoom of [15, 16]) {
     const centers = panPath(zoom);
