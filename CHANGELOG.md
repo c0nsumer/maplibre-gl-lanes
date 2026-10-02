@@ -7,6 +7,12 @@ follows Keep a Changelog, and the project uses semantic versioning.
 
 ### Fixed
 
+- Lanes stay sharp at high zoom for a network that crosses lon 0 or the
+  equator, such as one in London. They wobbled from z16 and broke up by
+  z20.
+- An opaque fill layer above the lane layer now covers the lanes. With a
+  translucent casing or `opacity` below 1, a lane can still show through
+  where it overlaps another route's lanes (see docs/api.md).
 - A lane no longer shoots a spike far across the map at low zoom. On a
   twisty trail whose hairpins shrink to a fraction of a pixel, the inside
   corner of a bend could land kilometers away.
