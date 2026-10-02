@@ -9,6 +9,7 @@ import {stabilizeLanes} from '../src/core/baselines';
 import {layoutAtZoom, type Layout} from '../src/core/layout';
 import {offsetPolylineAnchored, offsetPolylineSlidingAnchored, smoothCatmullRom, trimPolyline, type Polyline} from '../src/core/geometry';
 import {openFolds} from '../src/core/folds';
+import {tessellate, FLOATS_PER_VERTEX} from '../src/render/tessellate';
 
 type Line = {route: string; coords: number[][]};
 function graphOf(lines: Line[]): LineGraph {
@@ -141,4 +142,21 @@ describe('geometry primitives', () => {
         fin('folds stack', openFolds([0, 0, 100, 0, 0, 0.001, 100, 0.002, 0, 0.003], 12, 0, 0));
         expect(bad).toEqual([]);
     });
+});
+
+describe('a round join at a hairpin', () => {
+    // A turn within 1e-6 rad of a full reversal is a semicircle with no short
+    // side, so the fan's sweep is chosen; a left turn swept the back of the lane.
+    for (const h of [1e-5, -1e-5, 0]) {
+        it(`reaches round past the tip (turn ${h > 0 ? 'right' : h < 0 ? 'left' : 'straight back'})`, () => {
+            const coords = [0, 0, 100, 0, 0, h];
+            const mesh = tessellate([{route: 'r', look: {color: '#f00'}, coords, anchors: coords.slice(), kind: 'lane', travel: 1, startDistance: 0, edge: 0}], {scale: 1, origin: [0, 0]});
+            let reach = -Infinity;
+            for (let k = 0; k < mesh.vertexCount; k++) {
+                const o = k * FLOATS_PER_VERTEX;
+                if (Math.abs(mesh.vertices[o] + mesh.vertices[o + 2] - 100) < 1e-3) reach = Math.max(reach, mesh.vertices[o + 4]);
+            }
+            expect(reach).toBeCloseTo(1, 6);
+        });
+    }
 });

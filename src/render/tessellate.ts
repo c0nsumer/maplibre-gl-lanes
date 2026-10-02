@@ -507,7 +507,8 @@ function tessellatePath(b: MeshBuilder, px: Polyline, anchorsPx: Polyline, color
             const outsideLeft = cross > 0;
             pair(i, nPrevX, nPrevY, nPrevX, nPrevY, true);
             if (outsideLeft) fan(i, nPrevX, nPrevY, nNextX, nNextY, false);
-            else fan(i, -nPrevX, -nPrevY, -nNextX, -nNextY, false);
+            // Mirrored, the right side sweeps the other way round a semicircle to reach the tip.
+            else fan(i, -nPrevX, -nPrevY, -nNextX, -nNextY, true);
             pair(i, nNextX, nNextY, nNextX, nNextY, false);
         }
     }
