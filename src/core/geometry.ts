@@ -197,6 +197,15 @@ export function dedupe(p: Polyline, eps = 1e-9): Polyline {
 /** Loop removal's search window, in offsets: a hairpin's inside loop has a throat several offsets long. */
 const LOOP_WINDOW_OFFSETS = 12;
 
+/**
+ * Farthest an inside corner may sit from its vertex, in offsets. Two offset segments
+ * that nearly reverse (a hairpin fractions of a pixel wide at low zoom) still pass the
+ * parallel test, and their intersection lands kilometers away. 8 is a turn of about
+ * 166 degrees: limits of 2 and 4 also caught honest corners, whose bevel then left
+ * detours that loop removal could not cut.
+ */
+const INSIDE_MITER_LIMIT = 8;
+
 /** Offset sideways by `d`, positive = left of travel, with the loops of tight bends removed. */
 export function offsetPolyline(p: Polyline, d: number, arcStepRad = Math.PI / 9): Polyline {
     return offsetPolylineAnchored(p, d, arcStepRad).points;
@@ -241,7 +250,7 @@ export function offsetPolylineAnchored(p: Polyline, d: number, arcStepRad = Math
         }
         if (!outside) {
             const ix = intersectLines(s0x, s0y, s0X, s0Y, s1x, s1y, s1X, s1Y);
-            if (ix) {
+            if (ix && Math.hypot(ix[0] - vx, ix[1] - vy) <= INSIDE_MITER_LIMIT * Math.abs(d)) {
                 out.push(ix[0], ix[1]);
                 anchors.push(vx, vy);
             } else {

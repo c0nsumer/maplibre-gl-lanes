@@ -82,3 +82,32 @@ describe('lane ends at a RAMBA junction cut just past a bend', () => {
         }
     });
 });
+
+/** Farthest any vertex of `points` lies from its anchor. */
+function farthestFromAnchor(points: Polyline, anchors: Polyline): number {
+    let far = 0;
+    for (let i = 0; i < points.length; i += 2) far = Math.max(far, Math.hypot(points[i] - anchors[i], points[i + 1] - anchors[i + 1]));
+    return far;
+}
+
+describe('the inside of a hairpin narrower than a pixel', () => {
+    // Out and back, 0.01 px apart: the two offset segments at the turn are
+    // nearly parallel, so their intersection lay 30000 px along the line.
+    it('stays within a few offsets of the turn', () => {
+        const hairpin: Polyline = [0, 0, 100, 0, 200, 0, 100, 0.01, 0, 0.01];
+        const lane = offsetPolylineAnchored(hairpin, -1.5);
+        expect(farthestFromAnchor(lane.points, lane.anchors)).toBeLessThanOrEqual(8 * 1.5);
+    });
+
+    // Roller Coaster in MFO at zoom 10.5: sub-meter twists in the trail put
+    // a lane vertex over 200 px west of the bundle, a spike off the screen.
+    it('puts no MFO lane vertex far from its ground point', () => {
+        const fc = JSON.parse(readFileSync(new URL('./fixtures/mfo.src.geojson', import.meta.url), 'utf8'));
+        const g = buildLineGraph(fc.features, {routeProperty: 'route_id', colorProperty: 'route_colour'});
+        orderLanes(g);
+        stabilizeLanes(g);
+        const width = 2 + ((10.5 - 10) / 4) * 2;
+        const layout = layoutAtZoom(g, 10.5, () => ({spacing: width + 1, width, casingWidth: 1}));
+        for (const p of layout.paths) expect(farthestFromAnchor(p.coords, p.anchors)).toBeLessThan(60);
+    });
+});
