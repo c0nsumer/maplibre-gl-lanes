@@ -208,6 +208,11 @@ interface TailPlan {
     key: number;
     /** 0 before the geometry has decided, 1 one sliding piece, 2 plain lanes and a Bezier. */
     mode: 0 | 1 | 2;
+    /**
+     * The sliding piece, in mode 1. Two tails that differ only in their middle merged edges
+     * (parallel edges) share a key, so a later build cannot find each one's slide by key.
+     */
+    slide?: LanePath;
 }
 
 interface ZoomState {
@@ -320,7 +325,7 @@ export function layoutAtZoom(g: LineGraph, zoom: number, styleAt: SizesAtZoom, o
             if (!inView[plan.port.edge] && !t.edges.some((s) => inView[s.edge])) continue;
             resolveTail(st, plan);
             if (plan.mode !== 1 || (only && !only.has(t.route))) continue;
-            const path = st.connPaths.get(plan.key)!;
+            const path = plan.slide!;
             vertices += path.coords.length / 2;
             connIndex.set(plan.key, path);
             paths.push(path);
@@ -814,10 +819,11 @@ function resolveTail(st: ZoomState, plan: TailPlan): void {
     if (selfIntersects(coords)) return;
     const travel = travelSign(g.edges[p.edge].direction.get(t.route)) * (t.side === 'end' ? (p.end === 'b' ? 1 : -1) : (p.end === 'a' ? 1 : -1));
     const between: [number, number] = t.side === 'end' ? [p.edge, far.edge] : [far.edge, p.edge];
-    st.connPaths.set(plan.key, {
+    plan.slide = {
         route: t.route, look: lookOf(st, g.edges[p.edge], t.route), coords, anchors: slide.anchors,
         kind: 'connector', travel: travel as 1 | -1 | 0, startDistance: 0, edge: between[0], node: p.node, between,
-    });
+    };
+    st.connPaths.set(plan.key, plan.slide);
     plan.mode = 1;
 }
 

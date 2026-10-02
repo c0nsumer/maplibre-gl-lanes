@@ -87,6 +87,23 @@ describe('LayoutCache', () => {
     });
 });
 
+describe('LayoutCache with parallel edges', () => {
+    // Two tails over RAMBA's parallel edges differ only in their middle edge
+    // and share a key: a cached rebuild drew one slide twice and dropped the other.
+    it('draws every tail slide of a fresh build again', () => {
+        const width = 2;
+        const sizes = () => ({spacing: width + 1, width, casingWidth: 1});
+        for (const z of [9, 9.5, 10, 10.5, 11]) {
+            const fresh = layoutAtZoom(graph, z, sizes);
+            const cache = new LayoutCache();
+            layoutAtZoom(graph, z, sizes, {cache});
+            const again = layoutAtZoom(graph, z, sizes, {cache});
+            expect(new Set(again.paths).size).toBe(again.paths.length);
+            expect(again.paths.map((p) => p.coords.join()).sort()).toEqual(fresh.paths.map((p) => p.coords.join()).sort());
+        }
+    });
+});
+
 describe('TessellateCache', () => {
     it('builds the mesh a fresh tessellation would', () => {
         const layoutCache = new LayoutCache();
