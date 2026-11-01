@@ -7,7 +7,7 @@ import {describe, it, expect} from 'vitest';
 import {buildLineGraph} from '../src/core/graph';
 import {orderLanes} from '../src/core/order';
 import {layoutAtZoom} from '../src/core/layout';
-import {smoothCatmullRom, type Polyline} from '../src/core/geometry';
+import {roundBends, type Polyline} from '../src/core/geometry';
 
 const style = () => ({spacing: 8, width: 6, casingWidth: 1});
 
@@ -37,23 +37,24 @@ describe('the centerline keeps the corners the data has', () => {
     it('does not round a square corner in a road', () => {
         // A kilometer east, then a kilometer north, with a vertex at the turn.
         const corner: Polyline = [0, 0, 400, 0, 400, -400];
-        const rounded = smoothCatmullRom(corner, 5);
-        const kept = smoothCatmullRom(corner, 5, 10, 3, 60);
-        expect(deviation(rounded, corner)).toBeGreaterThan(20);
+        // As an ordinary bend the corner is rounded within the deviation budget; as a corner it
+        // is kept sharp.
+        const rounded = roundBends(corner, 1.5);
+        const kept = roundBends(corner, 1.5, 3, 60);
+        expect(deviation(rounded, corner)).toBeGreaterThan(1);
+        expect(deviation(rounded, corner)).toBeLessThanOrEqual(1.5 + 1e-9);
         expect(deviation(kept, corner)).toBeLessThan(0.001);
         // Asked for a radius, it rounds the corner by that radius. The
         // tangent points are a radius along each leg, so a quadratic fillet
         // of a right angle sits a quarter of its radius off the legs at its
-        // middle. The fillet has to reach past the vertices the spline
-        // itself put there, a few pixels apart, or it comes out far
-        // smaller than asked for.
-        const filleted = smoothCatmullRom(corner, 5, 10, 3, 60, 12);
+        // middle.
+        const filleted = roundBends(corner, 1.5, 3, 60, 12);
         expect(deviation(filleted, corner)).toBeCloseTo(3, 1);
         // And the legs themselves are where they were.
         expect(deviation(corner, filleted)).toBeLessThan(0.36 * 12);
-        // A gentle bend is still smoothed.
+        // A gentle bend is still rounded.
         const bend: Polyline = [0, 0, 400, 0, 800, -60];
-        expect(smoothCatmullRom(bend, 5, 10, 3, 60).length).toBeGreaterThan(bend.length);
+        expect(roundBends(bend, 1.5, 3, 60).length).toBeGreaterThan(bend.length);
     });
 
     it('keeps a road corner in the drawn lane', () => {

@@ -41,6 +41,41 @@ export function endDirection(p: Polyline): Vec {
     return [0, 0];
 }
 
+/**
+ * Where the line heads over its first `window` px, as a unit vector. A cut that lands just before
+ * a vertex leaves a sub-pixel stub whose own direction is noise; a rounded bend turns up to tens
+ * of degrees per vertex, so the stub can point anywhere.
+ */
+export function startDirectionOver(p: Polyline, window: number): Vec {
+    const at = pointAlong(p, window);
+    const dx = at[0] - p[0], dy = at[1] - p[1];
+    const l = Math.hypot(dx, dy);
+    return l > 0 ? [dx / l, dy / l] : startDirection(p);
+}
+
+/** Where the line arrives over its last `window` px; see `startDirectionOver`. */
+export function endDirectionOver(p: Polyline, window: number): Vec {
+    const n = p.length;
+    const at = pointAlong(reversed(p), window);
+    const dx = p[n - 2] - at[0], dy = p[n - 1] - at[1];
+    const l = Math.hypot(dx, dy);
+    return l > 0 ? [dx / l, dy / l] : endDirection(p);
+}
+
+/** The point `dist` px along the line from its start, or its end when the line is shorter. */
+function pointAlong(p: Polyline, dist: number): Vec {
+    let acc = 0;
+    for (let i = 2; i < p.length; i += 2) {
+        const seg = Math.hypot(p[i] - p[i - 2], p[i + 1] - p[i - 1]);
+        if (acc + seg >= dist) {
+            const t = seg > 0 ? (dist - acc) / seg : 0;
+            return [p[i - 2] + (p[i] - p[i - 2]) * t, p[i - 1] + (p[i + 1] - p[i - 1]) * t];
+        }
+        acc += seg;
+    }
+    return [p[p.length - 2], p[p.length - 1]];
+}
+
 /** Trim both ends by length; cuts that would leave less than `keepFraction` are scaled down together. */
 export function trimPolyline(p: Polyline, fromStart: number, fromEnd: number, keepFraction = 0.2): Polyline {
     // Segment lengths once: the total, both cut points and the vertex scan all walk the same sums.
@@ -544,122 +579,93 @@ export function ccwAngle(a: Vec, b: Vec): number {
 }
 
 /**
- * Centripetal Catmull-Rom through every vertex. A bend sharper than
- * `maxBendDeg` is a corner: the spline would swing wide of the road on both
- * approaches, so runs between corners are smoothed apart and each corner is
- * rounded by `cornerPx` instead.
+ * Every bend rounded by a quadratic fillet, so a straight run lies exactly
+ * on the line and the curve is never more than `deviationPx` off it. A lane
+ * is a claim about where the path is: rounding it is fine, relocating it is
+ * not, and an interpolating spline through sparse vertices bowed meters off
+ * the path at gentle bends. A fillet's apex sits a quarter of its tangent
+ * length times the sine of the bend off the legs, so a gentle bend gets a
+ * long sweep and a sharper one a tighter turn. A bend past `cornerBendDeg`
+ * is a corner the data means (a T, a switchback): the runs between corners
+ * are rounded apart and each corner is then rounded by `cornerPx`, so a
+ * corner stays a corner. Bends under `minBendDeg` are left as they are.
+ *
+ * A fillet takes at most 0.4 of the run to the next rounded bend, so close
+ * bends keep their own arcs and the line's ends are never reached: a line
+ * leaves its end along its first segment.
  */
-export function smoothCatmullRom(p: Polyline, segmentPx: number, maxPerSegment = 10, minBendDeg = 3, maxBendDeg = 180, cornerPx = 0): Polyline {
+export function roundBends(p: Polyline, deviationPx: number, minBendDeg = 3, cornerBendDeg = 180, cornerPx = 0): Polyline {
     const n = p.length / 2;
     if (n < 3) return p.slice();
-    if (maxBendDeg < 180) {
-        const cosMax = Math.cos((maxBendDeg * Math.PI) / 180);
+    if (cornerBendDeg < 180) {
+        const cosCorner = Math.cos((cornerBendDeg * Math.PI) / 180);
         let corners: number[] | null = null;
-        for (let i = 1; i < n - 1; i++) if (bendAt(p, i) < cosMax) (corners ??= []).push(i);
+        for (let i = 1; i < n - 1; i++) if (bendAt(p, i) < cosCorner) (corners ??= []).push(i);
         if (corners) {
             const out: Polyline = [];
             let from = 0;
             for (const c of [...corners, n - 1]) {
-                const run = smoothCatmullRom(p.slice(from * 2, (c + 1) * 2), segmentPx, maxPerSegment, minBendDeg);
+                const run = roundBends(p.slice(from * 2, (c + 1) * 2), deviationPx, minBendDeg);
                 for (let k = out.length ? 2 : 0; k < run.length; k += 2) out.push(run[k], run[k + 1]);
                 from = c;
             }
             return cornerPx > 0 ? roundCorners(out, p, corners, cornerPx) : out;
         }
     }
-    const X = (i: number) => p[i * 2];
-    const Y = (i: number) => p[i * 2 + 1];
-    const bend = new Float64Array(n);
     const cosMin = Math.cos((minBendDeg * Math.PI) / 180);
+    const bends: number[] = [];
+    const reach: number[] = [];
     for (let i = 1; i < n - 1; i++) {
-        const ax = X(i) - X(i - 1), ay = Y(i) - Y(i - 1);
-        const bx = X(i + 1) - X(i), by = Y(i + 1) - Y(i);
-        const la = Math.hypot(ax, ay) || 1, lb = Math.hypot(bx, by) || 1;
-        bend[i] = (ax * bx + ay * by) / (la * lb);
+        const c = bendAt(p, i);
+        if (c >= cosMin) continue;
+        bends.push(i);
+        // A hairpin's sine is near zero; the run limit below takes over.
+        reach.push((4 * deviationPx) / Math.sqrt(Math.max(0, 1 - c * c)));
     }
-    const out: Polyline = [X(0), Y(0)];
-    for (let i = 0; i < n - 1; i++) {
-        const curved = (i > 0 && bend[i] < cosMin) || (i + 1 < n - 1 && bend[i + 1] < cosMin);
-        const len = Math.hypot(X(i + 1) - X(i), Y(i + 1) - Y(i));
-        const steps = curved ? Math.max(1, Math.min(maxPerSegment, Math.round(len / segmentPx))) : 1;
-        if (steps === 1) {
-            out.push(X(i + 1), Y(i + 1));
+    if (!bends.length) return p.slice();
+    const cum = new Float64Array(n);
+    for (let i = 1; i < n; i++) {
+        cum[i] = cum[i - 1] + Math.hypot(p[i * 2] - p[i * 2 - 2], p[i * 2 + 1] - p[i * 2 - 1]);
+    }
+    const out: Polyline = [p[0], p[1]];
+    let done = 0;
+    for (let bi = 0; bi < bends.length; bi++) {
+        const c = bends[bi];
+        const prev = bi > 0 ? bends[bi - 1] : 0;
+        const next = bi + 1 < bends.length ? bends[bi + 1] : n - 1;
+        const cx = p[c * 2], cy = p[c * 2 + 1];
+        // The tangent points stay on the two segments at the bend: a vertex under `minBendDeg`
+        // between two bends is kept, and a fillet is not walked past it.
+        const ax = p[c * 2 - 2] - cx, ay = p[c * 2 - 1] - cy, la = Math.hypot(ax, ay);
+        const bx = p[c * 2 + 2] - cx, by = p[c * 2 + 3] - cy, lb = Math.hypot(bx, by);
+        const r = Math.min(reach[bi], 0.4 * (cum[c] - cum[prev]), 0.4 * (cum[next] - cum[c]), la, lb);
+        for (let i = done + 1; i < c; i++) out.push(p[i * 2], p[i * 2 + 1]);
+        done = c;
+        if (r < 0.05) {
+            out.push(cx, cy);
             continue;
         }
-        // Phantom control points reflected through the endpoints keep the end tangents.
-        const p0x = i > 0 ? X(i - 1) : 2 * X(0) - X(1);
-        const p0y = i > 0 ? Y(i - 1) : 2 * Y(0) - Y(1);
-        const p1x = X(i), p1y = Y(i);
-        const p2x = X(i + 1), p2y = Y(i + 1);
-        const p3x = i + 2 < n ? X(i + 2) : 2 * X(n - 1) - X(n - 2);
-        const p3y = i + 2 < n ? Y(i + 2) : 2 * Y(n - 1) - Y(n - 2);
-        const t0 = 0;
-        // Each knot step is kept above zero: a repeated point would divide by zero below.
-        const t1 = t0 + (Math.sqrt(Math.hypot(p1x - p0x, p1y - p0y)) || 1e-6);
-        const t2 = t1 + (Math.sqrt(Math.hypot(p2x - p1x, p2y - p1y)) || 1e-6);
-        const t3 = t2 + (Math.sqrt(Math.hypot(p3x - p2x, p3y - p2y)) || 1e-6);
-        for (let s = 1; s < steps; s++) {
-            const t = t1 + ((t2 - t1) * s) / steps;
-            const a1x = ((t1 - t) / (t1 - t0)) * p0x + ((t - t0) / (t1 - t0)) * p1x;
-            const a1y = ((t1 - t) / (t1 - t0)) * p0y + ((t - t0) / (t1 - t0)) * p1y;
-            const a2x = ((t2 - t) / (t2 - t1)) * p1x + ((t - t1) / (t2 - t1)) * p2x;
-            const a2y = ((t2 - t) / (t2 - t1)) * p1y + ((t - t1) / (t2 - t1)) * p2y;
-            const a3x = ((t3 - t) / (t3 - t2)) * p2x + ((t - t2) / (t3 - t2)) * p3x;
-            const a3y = ((t3 - t) / (t3 - t2)) * p2y + ((t - t2) / (t3 - t2)) * p3y;
-            const b1x = ((t2 - t) / (t2 - t0)) * a1x + ((t - t0) / (t2 - t0)) * a2x;
-            const b1y = ((t2 - t) / (t2 - t0)) * a1y + ((t - t0) / (t2 - t0)) * a2y;
-            const b2x = ((t3 - t) / (t3 - t1)) * a2x + ((t - t1) / (t3 - t1)) * a3x;
-            const b2y = ((t3 - t) / (t3 - t1)) * a2y + ((t - t1) / (t3 - t1)) * a3y;
-            out.push(((t2 - t) / (t2 - t1)) * b1x + ((t - t1) / (t2 - t1)) * b2x, ((t2 - t) / (t2 - t1)) * b1y + ((t - t1) / (t2 - t1)) * b2y);
+        const sx = cx + (ax / la) * r, sy = cy + (ay / la) * r;
+        const ex = cx + (bx / lb) * r, ey = cy + (by / lb) * r;
+        const steps = Math.max(4, Math.min(12, Math.round(r / 2)));
+        // A tangent point on the vertex before the bend would repeat it.
+        const first = Math.abs(out[out.length - 2] - sx) < 1e-9 && Math.abs(out[out.length - 1] - sy) < 1e-9 ? 1 : 0;
+        for (let i = first; i <= steps; i++) {
+            const t = i / steps, m = 1 - t;
+            out.push(m * m * sx + 2 * m * t * cx + t * t * ex, m * m * sy + 2 * m * t * cy + t * t * ey);
         }
-        out.push(p2x, p2y);
+        if (r >= lb) done = c + 1;
     }
+    for (let i = done + 1; i < n; i++) out.push(p[i * 2], p[i * 2 + 1]);
     return out;
 }
 
 /**
- * Where the smoothed line leaves its first vertex, without smoothing the
- * edge. Its subdivision rules must stay in step with `smoothCatmullRom`.
- */
-export function splineStartDirection(p: Polyline, segmentPx: number, maxPerSegment = 10, minBendDeg = 3, maxBendDeg = 180): Vec {
-    const n = p.length / 2;
-    if (n < 3) return startDirection(p);
-    if (maxBendDeg < 180 && bendAt(p, 1) < Math.cos((maxBendDeg * Math.PI) / 180)) return startDirection(p);
-    const steps = splineSteps(p, 0, segmentPx, maxPerSegment, minBendDeg);
-    if (steps < 2) return startDirection(p);
-    const [x, y] = centripetalPoint(2 * p[0] - p[2], 2 * p[1] - p[3], p[0], p[1], p[2], p[3], p[4], p[5], 1 / steps);
-    const dx = x - p[0], dy = y - p[1];
-    const l = Math.hypot(dx, dy);
-    return l > 0 ? [dx / l, dy / l] : startDirection(p);
-}
-
-/** Where the smoothed line arrives at its last vertex; see `splineStartDirection`. */
-export function splineEndDirection(p: Polyline, segmentPx: number, maxPerSegment = 10, minBendDeg = 3, maxBendDeg = 180): Vec {
-    const n = p.length / 2;
-    if (n < 3) return endDirection(p);
-    if (maxBendDeg < 180 && bendAt(p, n - 2) < Math.cos((maxBendDeg * Math.PI) / 180)) return endDirection(p);
-    const steps = splineSteps(p, n - 2, segmentPx, maxPerSegment, minBendDeg);
-    if (steps < 2) return endDirection(p);
-    const o = (n - 1) * 2;
-    const [x, y] = centripetalPoint(p[o - 4], p[o - 3], p[o - 2], p[o - 1], p[o], p[o + 1], 2 * p[o] - p[o - 2], 2 * p[o + 1] - p[o - 1], (steps - 1) / steps);
-    const dx = p[o] - x, dy = p[o + 1] - y;
-    const l = Math.hypot(dx, dy);
-    return l > 0 ? [dx / l, dy / l] : endDirection(p);
-}
-
-function splineSteps(p: Polyline, i: number, segmentPx: number, maxPerSegment: number, minBendDeg: number): number {
-    const n = p.length / 2;
-    const cosMin = Math.cos((minBendDeg * Math.PI) / 180);
-    const curved = (i > 0 && bendAt(p, i) < cosMin) || (i + 1 < n - 1 && bendAt(p, i + 1) < cosMin);
-    if (!curved) return 1;
-    const len = Math.hypot(p[i * 2 + 2] - p[i * 2], p[i * 2 + 3] - p[i * 2 + 1]);
-    return Math.max(1, Math.min(maxPerSegment, Math.round(len / segmentPx)));
-}
-
-/**
- * Quadratic fillets with the corner as control point. Tangent points are
- * walked to, since the spline leaves vertices a few pixels apart. A corner
- * takes at most 0.4 of each adjacent run, so close corners keep their own arcs.
+ * Quadratic fillets with the corner as control point, over a line whose
+ * gentler bends are already rounded. Tangent points are walked to, since
+ * those arcs leave vertices a few pixels apart. A corner takes at most 0.4
+ * of the run to the next corner, passing over any gentler bend in between,
+ * so close corners keep their own arcs.
  */
 function roundCorners(out: Polyline, src: Polyline, corners: number[], radiusPx: number): Polyline {
     const n = src.length / 2;
@@ -740,27 +746,6 @@ function bendAt(p: Polyline, k: number): number {
     const ax = p[k * 2] - p[k * 2 - 2], ay = p[k * 2 + 1] - p[k * 2 - 1];
     const bx = p[k * 2 + 2] - p[k * 2], by = p[k * 2 + 3] - p[k * 2 + 1];
     return (ax * bx + ay * by) / ((Math.hypot(ax, ay) || 1) * (Math.hypot(bx, by) || 1));
-}
-
-/** Must match the arithmetic in `smoothCatmullRom`. */
-function centripetalPoint(p0x: number, p0y: number, p1x: number, p1y: number, p2x: number, p2y: number, p3x: number, p3y: number, u: number): Vec {
-    const t0 = 0;
-    // Each knot step is kept above zero: a repeated point would divide by zero below.
-    const t1 = t0 + (Math.sqrt(Math.hypot(p1x - p0x, p1y - p0y)) || 1e-6);
-    const t2 = t1 + (Math.sqrt(Math.hypot(p2x - p1x, p2y - p1y)) || 1e-6);
-    const t3 = t2 + (Math.sqrt(Math.hypot(p3x - p2x, p3y - p2y)) || 1e-6);
-    const t = t1 + (t2 - t1) * u;
-    const a1x = ((t1 - t) / (t1 - t0)) * p0x + ((t - t0) / (t1 - t0)) * p1x;
-    const a1y = ((t1 - t) / (t1 - t0)) * p0y + ((t - t0) / (t1 - t0)) * p1y;
-    const a2x = ((t2 - t) / (t2 - t1)) * p1x + ((t - t1) / (t2 - t1)) * p2x;
-    const a2y = ((t2 - t) / (t2 - t1)) * p1y + ((t - t1) / (t2 - t1)) * p2y;
-    const a3x = ((t3 - t) / (t3 - t2)) * p2x + ((t - t2) / (t3 - t2)) * p3x;
-    const a3y = ((t3 - t) / (t3 - t2)) * p2y + ((t - t2) / (t3 - t2)) * p3y;
-    const b1x = ((t2 - t) / (t2 - t0)) * a1x + ((t - t0) / (t2 - t0)) * a2x;
-    const b1y = ((t2 - t) / (t2 - t0)) * a1y + ((t - t0) / (t2 - t0)) * a2y;
-    const b2x = ((t3 - t) / (t3 - t1)) * a2x + ((t - t1) / (t3 - t1)) * a3x;
-    const b2y = ((t3 - t) / (t3 - t1)) * a2y + ((t - t1) / (t3 - t1)) * a3y;
-    return [((t2 - t) / (t2 - t1)) * b1x + ((t - t1) / (t2 - t1)) * b2x, ((t2 - t) / (t2 - t1)) * b1y + ((t - t1) / (t2 - t1)) * b2y];
 }
 
 export interface Bounds {

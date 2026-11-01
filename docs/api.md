@@ -264,7 +264,7 @@ otherwise pass unnoticed.
 | `casingColor` | `'#333'` | CSS color of the casing. `null` skips the casing pass. |
 | `opacity` | `1` | Opacity of the whole layer. |
 | `zoomEpsilon` | `0.25` | Re-lay out when the zoom moves out by more than this. |
-| `smooth` | `true` | Smooth centerlines with a spline, keeping corners. |
+| `smooth` | `true` | Round the bends of centerlines, within 1.5 px of the path, keeping corners. |
 | `openFolds` | `true` | Make room where a path folds back on itself more tightly than its bundle is wide. See `LayoutOptions`. |
 | `laneStyle` | none | Per-edge look. See `LaneStyle`. |
 | `cull` | `true` | Only lay out what is near the viewport. |
@@ -295,7 +295,7 @@ layer draws straight onto the map and allocates nothing.
 
 `zoomEpsilon` bounds how stale the geometry may get between rebuilds.
 Between them the mesh stays pixel-exact for lane spacing and widths; only
-the spline sampling density and the node-front positions age. Zooming in is
+the bend rounding and the node-front positions age. Zooming in is
 tolerated up to twice the value.
 
 Pass `worker: false` to build inside the render call. Two reasons to want
@@ -558,7 +558,7 @@ coordinates at that zoom.
 | Field | Default | What it does |
 |---|---|---|
 | `bounds` | none | Only build geometry intersecting these Mercator bounds. |
-| `smooth` | `true` | Smooth centerlines with a spline through the path vertices. |
+| `smooth` | `true` | Round the bends of centerlines. A solo lane stays within 1.5 px of its path; a corner sharper than 60 degrees is rounded by 1.5 lane pitches. |
 | `openFolds` | `true` | Make room where an edge's line folds back on itself more tightly than its bundle is wide. |
 | `routes` | every route | Only emit the lanes and connectors of these routes. |
 | `laneStyle` | none | Per-edge look. See `LaneStyle`. |

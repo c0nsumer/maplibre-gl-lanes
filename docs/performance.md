@@ -91,19 +91,19 @@ RAMBA:
 
 | Zoom | Full layout | Path vertices | Merged edges | Mesh build | Mesh vertices | Mesh size | Culled layout, phone view |
 |---|---|---|---|---|---|---|---|
-| 12 | 17 ms | 6471 | 197 | 4 ms | 35128 | 1.7 MB | 19 ms, 295 of 492 edges |
-| 14 | 22 ms | 15732 | 71 | 8 ms | 62884 | 3.0 MB | 15 ms, 310 of 492 edges |
-| 16 | 21 ms | 32834 | 9 | 14 ms | 102738 | 5.0 MB | 6 ms, 49 of 492 edges |
-| 18 | 30 ms | 65639 | 1 | 21 ms | 169162 | 8.3 MB | 2 ms, 12 of 492 edges |
+| 12 | 20 ms | 6174 | 197 | 4 ms | 34422 | 1.7 MB | 20 ms, 295 of 492 edges |
+| 14 | 21 ms | 15008 | 71 | 7 ms | 61463 | 3.0 MB | 17 ms, 310 of 492 edges |
+| 16 | 26 ms | 30859 | 9 | 12 ms | 98681 | 4.8 MB | 5 ms, 49 of 492 edges |
+| 18 | 31 ms | 54921 | 1 | 17 ms | 147614 | 7.2 MB | 2 ms, 12 of 492 edges |
 
 MFO:
 
 | Zoom | Full layout | Path vertices | Merged edges | Mesh build | Mesh vertices | Mesh size | Culled layout, phone view |
 |---|---|---|---|---|---|---|---|
-| 12 | 6 ms | 5288 | 7 | 2 ms | 16549 | 0.8 MB | 6 ms, 36 of 43 edges |
-| 14 | 13 ms | 12978 | 1 | 4 ms | 32388 | 1.6 MB | 1 ms, 4 of 43 edges |
-| 16 | 19 ms | 29594 | 1 | 8 ms | 64988 | 3.2 MB | 1 ms, 4 of 43 edges |
-| 18 | 31 ms | 64549 | 0 | 18 ms | 135010 | 6.7 MB | under 1 ms, 0 of 43 edges |
+| 12 | 7 ms | 5072 | 7 | 1 ms | 16014 | 0.8 MB | 7 ms, 36 of 43 edges |
+| 14 | 14 ms | 12402 | 1 | 4 ms | 31114 | 1.5 MB | 1 ms, 4 of 43 edges |
+| 16 | 20 ms | 26922 | 1 | 7 ms | 59672 | 2.9 MB | 1 ms, 4 of 43 edges |
+| 18 | 33 ms | 54379 | 0 | 14 ms | 114729 | 5.7 MB | under 1 ms, 0 of 43 edges |
 
 MFO is a small network of dense lines, so at z12 the phone view holds
 almost all of it and the culled build is the full one. The example
@@ -135,14 +135,14 @@ build per rebuild, in Node.js on the desktop machine:
 
 | Pan | Rebuilds | Total, no cache | Total, cached | Median, no cache | Median, cached |
 |---|---|---|---|---|---|
-| At z15 | 92 | 664 ms | 122 ms | 6.1 ms | 0.5 ms |
-| At z16 | 360 | 1065 ms | 96 ms | 2.7 ms | 0.1 ms |
-| Zooming from z15 to z16 while panning | 143 | 531 ms | 528 ms | 3.1 ms | 3.1 ms |
+| At z15 | 92 | 677 ms | 131 ms | 5.9 ms | 0.5 ms |
+| At z16 | 360 | 1079 ms | 107 ms | 2.8 ms | 0.1 ms |
+| Zooming from z15 to z16 while panning | 143 | 563 ms | 569 ms | 3.3 ms | 3.3 ms |
 
 "No cache" rebuilds everything on every pan, which is what the layer did
 before it kept its per-zoom work (`--no-cache` on the benchmark). At z15
-the cache takes the worst rebuild of the pan from 19 ms to 10 ms, and the
-90th percentile from 13 ms to 4 ms.
+the cache takes the worst rebuild of the pan from 19 ms to 11 ms, and the
+90th percentile from 14 ms to 4 ms.
 
 The third row moves the zoom as it pans, so almost every rebuild starts
 a new zoom and the cache has nothing to give it. A caller that lays out

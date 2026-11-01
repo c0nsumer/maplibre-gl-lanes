@@ -3,6 +3,23 @@
 All notable changes to maplibre-gl-lanes are recorded here. The format
 follows Keep a Changelog, and the project uses semantic versioning.
 
+## Unreleased
+
+### Changed
+
+- Centerlines are rounded with fillets at every bend instead of a
+  Catmull-Rom spline through the vertices. A lane drawn on its own now
+  stays within 1.5 px of its path at every zoom; the spline bowed up to 8
+  px off a path mapped with sparse vertices at z18, which put the lane
+  beside one-way markers drawn on the same line. Corners sharper than 60
+  degrees are rounded by 1.5 lane pitches as before. Under a bundle the
+  rounding may go a quarter of the bundle's half width off the path, as the
+  simplification already does.
+- The connectors of one bundle leave a cut in the direction the bundle
+  arrives there, read off the centerline, rather than each in the direction
+  of its own lane's last vertices. The inside lane of a tight hook could
+  point its connector across its neighbor's.
+
 ## 1.3.0 - 2026-10-02
 
 ### Changed

@@ -198,11 +198,16 @@ chapter 6]:
 
 Differences from LOOM: the layout is computed in screen pixels for the
 current zoom rather than in map units for a fixed scale; lanes of routes
-that end where other routes pass are not cut back; centerlines are
-optionally smoothed with a centripetal Catmull-Rom spline, which stops at
-any bend sharper than 60 degrees and rounds that bend by 1.5 lane pitches
-instead, so a corner in the path stays a corner; and the whole thing is
-culled to the viewport.
+that end where other routes pass are not cut back; centerlines optionally
+have every bend rounded by a quadratic fillet, so the line stays within 1.5
+px of the path at every zoom (under a bundle, within a quarter of the
+bundle's half width, where the simplification tolerance grows the same way),
+and a bend sharper than 60 degrees is rounded by 1.5 lane pitches instead,
+so a corner in the path stays a corner; and the whole thing is culled to the
+viewport. The rounding is a fillet and not an interpolating spline because a
+spline through sparse vertices bows meters off the path at gentle bends,
+which put a lane beside markers drawn on the source line. A lane is a claim
+about where the path is: rounding it is fine, relocating it is not.
 
 A bundle drawn along a line needs the line to keep clear of itself. Two
 legs of a hairpin closer together than the bundle is wide put the lanes of

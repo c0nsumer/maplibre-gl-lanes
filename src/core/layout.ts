@@ -12,6 +12,7 @@ import {
     connectorCurve,
     intersectLines,
     endDirection,
+    endDirectionOver,
     offsetPolyline,
     offsetPolylineAnchored,
     offsetPolylineSlidingAnchored,
@@ -20,13 +21,12 @@ import {
     polylineLength,
     removeLoopsAnchored,
     reversed,
+    roundBends,
     simplify,
     simplifyRank,
     simplifyRanked,
-    smoothCatmullRom,
-    splineEndDirection,
-    splineStartDirection,
     startDirection,
+    startDirectionOver,
     trimPolyline,
     type Bounds,
     type Polyline,
@@ -86,7 +86,7 @@ export type SizesAtZoom = (zoom: number) => LaneSizes;
 export interface LayoutOptions {
     /** Only build geometry intersecting these Mercator bounds. */
     bounds?: Bounds | null;
-    /** Smooth centerlines with a spline. Default true. */
+    /** Round the bends of centerlines, within 1.5 px of the path. Default true. */
     smooth?: boolean;
     /**
      * Push apart the legs of a fold tighter than the bundle is wide, by at most half the bundle
@@ -118,7 +118,6 @@ export interface LaneLook {
 const SIMPLIFY_TOLERANCE_PX = 0.25;
 /** Simplification tolerance per px of widest offset: zigzags hidden under a bundle cross its lanes. */
 const GENERALIZE_PER_OFFSET = 0.25;
-const SMOOTH_SEGMENT_PX = 5;
 const MIN_FRONT_MARGIN_LANES = 0.6;
 const MAX_FRONT_FRACTION = 0.42;
 /** Below this many lane pitches a clique's reference curve is not shared (see `buildGroup`). */
@@ -132,7 +131,13 @@ const SOLO_EASE_STEPS = 6;
 const MERGE_BELOW_BUNDLE_WIDTHS = 1;
 /** Rounds of merging; each round can change which lane changes cross which edges. */
 const MAX_MERGE_PASSES = 4;
-/** The spline keeps bends sharper than this as corners, rounded by `CORNER_RADIUS_LANES`. */
+/**
+ * A rounded bend keeps a solo lane within this many px of the path at every zoom. A lane is a
+ * claim about where the path is; 1.5 px rounds a 30 degree bend over about 23 px of path and is
+ * below what a chevron or marker drawn on the source line shows as off. See `bendBudget`.
+ */
+const BEND_DEVIATION_PX = 1.5;
+/** Bends sharper than this are corners the data means, rounded by `CORNER_RADIUS_LANES` instead. */
 const CORNER_BEND_DEG = 60;
 /**
  * A junction turn runs to where the two lines meet and rounds that corner, so a T looks like a T.
@@ -432,9 +437,9 @@ function zoomState(g: LineGraph, zoom: number, style: LaneSizes, smooth: boolean
         for (let i = 0; i < p.length; i++) p[i] *= scale;
         simplePx[e.id] = p;
         edgeLen[e.id] = polylineLength(p);
-        // The drawn line is the spline, so directions come from its ends.
-        dirA[e.id] = smooth ? splineStartDirection(p, SMOOTH_SEGMENT_PX, 10, 3, CORNER_BEND_DEG) : startDirection(p);
-        dirB[e.id] = (smooth ? splineEndDirection(p, SMOOTH_SEGMENT_PX, 10, 3, CORNER_BEND_DEG) : endDirection(p)).map((v) => -v) as Vec;
+        // A fillet never reaches an edge's end, so the drawn line leaves along the first segment.
+        dirA[e.id] = startDirection(p);
+        dirB[e.id] = endDirection(p).map((v) => -v) as Vec;
     }
 
     // An edge too short for its bundles or lane changes merges its nodes into one junction (LOOM's
@@ -637,16 +642,38 @@ function lookOf(st: ZoomState, e: GraphEdge, r: string): LaneLook {
     return look;
 }
 
-/** An edge's centerline in px: smoothed, re-simplified, and opened at tight folds. */
+function widestOffset(st: ZoomState, edge: number): number {
+    const e = st.graph.edges[edge];
+    return ((e.routes.length - 1) / 2 + Math.abs(e.baseline ?? 0)) * st.spacing;
+}
+
+/**
+ * How far a rounded bend may take a centerline off the path: `BEND_DEVIATION_PX`, or under a
+ * bundle a quarter of its widest offset, for the reason the simplification tolerance grows the
+ * same way. That also keeps the inside lane's turn open: at the 60 degree limit a fillet's radius
+ * is eight budgets, twice the widest offset, and the inside lane folded onto its neighbor at a
+ * fixed 1.5 px.
+ */
+function bendBudget(st: ZoomState, edges: number[]): number {
+    let widest = 0;
+    for (const edge of edges) widest = Math.max(widest, widestOffset(st, edge));
+    return Math.max(BEND_DEVIATION_PX, GENERALIZE_PER_OFFSET * widest);
+}
+
+function roundedPx(st: ZoomState, p: Polyline, edges: number[]): Polyline {
+    return simplify(roundBends(p, bendBudget(st, edges), 3, CORNER_BEND_DEG, CORNER_RADIUS_LANES * st.spacing), SIMPLIFY_TOLERANCE_PX);
+}
+
+/** An edge's centerline in px: bends rounded, re-simplified, and opened at tight folds. */
 function preparedPx(st: ZoomState, edge: number): Polyline {
     let px = st.preparedPx[edge];
     if (!px) {
         const simple = st.simplePx[edge];
-        px = st.smooth ? simplify(smoothCatmullRom(simple, SMOOTH_SEGMENT_PX, 10, 3, CORNER_BEND_DEG, CORNER_RADIUS_LANES * st.spacing), SIMPLIFY_TOLERANCE_PX) : simple;
+        px = st.smooth ? roundedPx(st, simple, [edge]) : simple;
         // A merged edge only guides slides, and a single lane overlaps nothing.
         const e = st.graph.edges[edge];
         if (st.openFolds && e.routes.length > 1 && !st.short[edge]) {
-            const widest = ((e.routes.length - 1) / 2 + Math.abs(e.baseline ?? 0)) * st.spacing;
+            const widest = widestOffset(st, edge);
             // Kept a lane clear of the node fronts, where connectors start.
             px = openFolds(px, 2 * widest + st.width + 2 * st.casing, st.frontA[edge] + st.spacing, st.frontB[edge] + st.spacing);
         }
@@ -762,7 +789,7 @@ function lanePathOf(st: ZoomState, edge: number, route: string): LanePath | null
     return path;
 }
 
-function guideOf(st: ZoomState, parts: Polyline[]): Polyline {
+function guideOf(st: ZoomState, parts: Polyline[], edges: number[]): Polyline {
     const out: Polyline = [];
     for (const p of parts) {
         for (let i = 0; i < p.length; i += 2) {
@@ -770,7 +797,7 @@ function guideOf(st: ZoomState, parts: Polyline[]): Polyline {
             out.push(p[i], p[i + 1]);
         }
     }
-    return st.smooth ? simplify(smoothCatmullRom(out, SMOOTH_SEGMENT_PX, 10, 3, CORNER_BEND_DEG, CORNER_RADIUS_LANES * st.spacing), SIMPLIFY_TOLERANCE_PX) : out;
+    return st.smooth ? roundedPx(st, out, edges) : out;
 }
 
 /** A tail slides as one piece (mode 1), or with nothing to slide along, falls back to lanes and a Bezier (2). */
@@ -789,7 +816,8 @@ function resolveTail(st: ZoomState, plan: TailPlan): void {
     const portPart = t.side === 'end'
         ? lastPortion(p.end === 'b' ? portPx : reversed(portPx), p.end === 'b' ? st.frontB[p.edge] : st.frontA[p.edge])
         : firstPortion(p.end === 'a' ? portPx : reversed(portPx), p.end === 'a' ? st.frontA[p.edge] : st.frontB[p.edge]);
-    const guide = t.side === 'end' ? guideOf(st, [portPart, ...parts]) : guideOf(st, [...parts, portPart]);
+    const edges = [p.edge, ...t.edges.map((s) => s.edge)];
+    const guide = t.side === 'end' ? guideOf(st, [portPart, ...parts], edges) : guideOf(st, [...parts, portPart], edges);
     const slide = t.side === 'end' ? offsetPolylineSlidingAnchored(guide, portOffset, farOffset) : offsetPolylineSlidingAnchored(guide, farOffset, portOffset);
     if (slide.points.length < 4) return;
     const lanePts = t.side === 'end' ? (p.end === 'b' ? portLane.points : reversed(portLane.points)) : (p.end === 'a' ? portLane.points : reversed(portLane.points));
@@ -817,7 +845,7 @@ function islandPaths(st: ZoomState, isl: JunctionIsland): LanePath[] {
     if (isl.paths) return isl.paths;
     const g = st.graph;
     const first = isl.steps[0], last = isl.steps[isl.steps.length - 1];
-    const guide = guideOf(st, isl.steps.map((s) => orientedPx(st, s.edge, s.forward)));
+    const guide = guideOf(st, isl.steps.map((s) => orientedPx(st, s.edge, s.forward)), isl.steps.map((s) => s.edge));
     const d0 = offsetTravel(st, first.edge, isl.route, first.forward);
     const d1 = offsetTravel(st, last.edge, isl.route, last.forward);
     const slide = offsetPolylineSlidingAnchored(guide, d0, d1);
@@ -995,7 +1023,7 @@ function buildGroup(st: ZoomState, grp: ConnGroup): void {
         const from = m.pu.end === 'b' ? laneU.points : reversed(laneU.points);
         const to = m.pv.end === 'a' ? laneV.points : reversed(laneV.points);
         // Over merged edges the connector follows the line anyway, so there is nothing to measure.
-        const made = m.via.length ? null : connector(from, to, st.spacing);
+        const made = m.via.length ? null : connector(from, to, st.spacing, cutDirection(st, m.pu.edge, m.pu.end), cutDirection(st, m.pv.edge, m.pv.end, true));
         ends.set(m, {from, to, made});
         if (made && made.coords.length >= 4 && leavesLine(st, m, made.coords)) follows = true;
     }
@@ -1006,7 +1034,7 @@ function buildGroup(st: ZoomState, grp: ConnGroup): void {
         }
         const {from, to, made} = ends.get(m)!;
         if ((m.via.length || follows) && buildViaConnector(st, m, from, to)) continue;
-        const curve = made ?? connector(from, to, st.spacing);
+        const curve = made ?? connector(from, to, st.spacing, cutDirection(st, m.pu.edge, m.pu.end), cutDirection(st, m.pv.edge, m.pv.end, true));
         if (curve.coords.length < 4) continue;
         clique.push({member: m, lateral: m.lateral, own: curve.coords, coords: curve.coords, corner: curve.corner});
     }
@@ -1028,6 +1056,25 @@ function buildGroup(st: ZoomState, grp: ConnGroup): void {
             kind: 'connector', travel: m.travel, startDistance: 0, edge: grp.edgeU, node: m.pu.node, between: [grp.edgeU, grp.edgeV],
         });
     }
+}
+
+/**
+ * Where a bundle arrives at its cut, read off the centerline over the half pitch before it,
+ * heading toward the node or (`leaving`) away from it. Every lane's connector sets out this way,
+ * so the connectors of one bundle stay parallel and share the corner-or-arc decision: a lane's
+ * own last vertices are its offset's miter at the cut, and the inside lane of a hook can point
+ * anywhere. Read before the cut and not after it, because the lane meets the connector there and
+ * a corner may begin a pixel past it. Null when nothing was cut.
+ */
+function cutDirection(st: ZoomState, edge: number, end: 'a' | 'b', leaving = false): Vec | null {
+    const front = end === 'b' ? st.frontB[edge] : st.frontA[edge];
+    if (front <= 0) return null;
+    const px = preparedPx(st, edge);
+    const before = trimPolyline(end === 'b' ? px : reversed(px), 0, front);
+    if (before.length < 4) return null;
+    const d = endDirectionOver(before, st.spacing / 2);
+    if (d[0] === 0 && d[1] === 0) return null;
+    return leaving ? [-d[0], -d[1]] : d;
 }
 
 /** Whether a connector strays from the two cut portions it joins by more than `FOLLOW_ABOVE_LANES`. */
@@ -1131,7 +1178,7 @@ function buildViaConnector(st: ZoomState, m: ConnMember, from: Polyline, to: Pol
         for (let k = 0; k < knots.length; k += 2) knots[k + 1] = straight(knots[k]) + (knots[k + 1] - straight(knots[k])) * share;
     }
     // The edges were smoothed but the joints between them were not.
-    const guide = st.smooth ? simplify(smoothCatmullRom(centerline, SMOOTH_SEGMENT_PX, 10, 3, CORNER_BEND_DEG, CORNER_RADIUS_LANES * st.spacing), SIMPLIFY_TOLERANCE_PX) : centerline;
+    const guide = st.smooth ? roundedPx(st, centerline, [m.pu.edge, m.pv.edge, ...m.via.map((s) => s.edge)]) : centerline;
     const slide = offsetPolylineSlidingAnchored(guide, m.lateral, m.lateralOut, 4, knots);
     if (slide.points.length < 4) return false;
     // Snapped: the ends differ only by the normal at the cut point.
@@ -1547,11 +1594,12 @@ function signedTurning(p: Polyline): number {
     return total;
 }
 
-function connector(from: Polyline, to: Polyline, spacing: number): {coords: Polyline; corner: boolean} {
+function connector(from: Polyline, to: Polyline, spacing: number, tpAt: Vec | null = null, tqAt: Vec | null = null): {coords: Polyline; corner: boolean} {
     const P: Vec = [from[from.length - 2], from[from.length - 1]];
     const Q: Vec = [to[0], to[1]];
-    const tp = endDirection(from);
-    const tqIn = startDirection(to);
+    // Read over half a pitch: the vertex next to a cut can be a sub-pixel stub (see `startDirectionOver`).
+    const tp = tpAt ?? endDirectionOver(from, spacing / 2);
+    const tqIn = tqAt ?? startDirectionOver(to, spacing / 2);
     const tq: Vec = [-tqIn[0], -tqIn[1]];
     const chord = Math.hypot(Q[0] - P[0], Q[1] - P[1]);
     if (chord < 1e-6) return {coords: [], corner: false};

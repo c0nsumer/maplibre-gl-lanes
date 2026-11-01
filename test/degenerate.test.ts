@@ -7,7 +7,7 @@ import {buildLineGraph, type LineGraph} from '../src/core/graph';
 import {orderLanes} from '../src/core/order';
 import {stabilizeLanes} from '../src/core/baselines';
 import {layoutAtZoom, type Layout} from '../src/core/layout';
-import {offsetPolylineAnchored, offsetPolylineSlidingAnchored, smoothCatmullRom, trimPolyline, type Polyline} from '../src/core/geometry';
+import {offsetPolylineAnchored, offsetPolylineSlidingAnchored, roundBends, trimPolyline, type Polyline} from '../src/core/geometry';
 import {openFolds} from '../src/core/folds';
 import {tessellate, FLOATS_PER_VERTEX} from '../src/render/tessellate';
 
@@ -131,9 +131,9 @@ describe('geometry primitives', () => {
         fin('slide single', offsetPolylineSlidingAnchored([0, 0], 3, -3).points);
         fin('slide two same', offsetPolylineSlidingAnchored([0, 0, 0, 0], 3, -3).points);
         fin('slide zero total', offsetPolylineSlidingAnchored([0, 0, 1e-12, 0], 3, -3).points);
-        fin('smooth back', smoothCatmullRom([0, 0, 10, 0, 0, 0], 5, 10, 3, 60, 12));
-        fin('smooth dup', smoothCatmullRom([0, 0, 0, 0, 10, 0, 10, 0, 10, 10], 5, 10, 3, 60, 12));
-        fin('smooth dup inside', smoothCatmullRom([0, 0, 10, 0, 20, 5, 20, 5, 30, 0], 1));
+        fin('round back', roundBends([0, 0, 10, 0, 0, 0], 1.5, 3, 60, 12));
+        fin('round dup', roundBends([0, 0, 0, 0, 10, 0, 10, 0, 10, 10], 1.5, 3, 60, 12));
+        fin('round dup inside', roundBends([0, 0, 10, 0, 20, 5, 20, 5, 30, 0], 1.5));
         fin('trim zero', trimPolyline([0, 0, 0, 0], 3, 3));
         fin('trim big', trimPolyline([0, 0, 10, 0], 30, 30));
         fin('folds back', openFolds([0, 0, 100, 0, 0, 0], 12, 0, 0));

@@ -202,7 +202,7 @@ export interface LaneLayerOptions {
     opacity?: number;
     /** Re-layout when the zoom moves out by more than this, or in by twice it. Default 0.25. */
     zoomEpsilon?: number;
-    /** Smooth centerlines with a spline. Default true. */
+    /** Round the bends of centerlines, within 1.5 px of the path. Default true. */
     smooth?: boolean;
     /** Open folds tighter than the bundle is wide (see `LayoutOptions.openFolds`). Default true. */
     openFolds?: boolean;
