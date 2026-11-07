@@ -167,7 +167,14 @@ chapter 6]:
   that cut, the curve would leave the mapped line. Where it would leave it
   by more than one lane beyond the lane's own offset, the whole group of
   connectors follows the line instead, the way connectors over merged edges
-  do. This rule is not from the cited papers. It was worked out for this
+  do. A lane turning on its own also follows the line when its curve
+  misses the node, that is, when the drawn lane would not cover it. Across
+  a switchback the curve stays close to both legs while cutting the corner
+  by lanes, and a trail that ends at that node, a spur into the apex, was
+  left hanging in the gap. Following the line rounds the node by the
+  corner radius, as the same bend inside an edge is rounded. A bundle keeps
+  its curve there, because its inside lane pinches at that fillet. These
+  rules are not from the cited papers. They were worked out for this
   project.
 - Junctions closer together than a bundle is wide merge into one junction,
   LOOM's "meta node" [2, chapter 6]. At each zoom, an edge is merged into

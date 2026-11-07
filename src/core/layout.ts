@@ -1077,7 +1077,15 @@ function cutDirection(st: ZoomState, edge: number, end: 'a' | 'b', leaving = fal
     return leaving ? [-d[0], -d[1]] : d;
 }
 
-/** Whether a connector strays from the two cut portions it joins by more than `FOLLOW_ABOVE_LANES`. */
+/**
+ * Whether a connector strays from the two cut portions it joins by more than `FOLLOW_ABOVE_LANES`,
+ * or, for a lane turning alone, misses the node: the drawn lane does not cover it. The second test
+ * is the converse of the first for the one point of the line that matters. Across a sharp turn a
+ * curve stays near both legs while cutting the corner by lanes, and a lane that ends at that node
+ * (a spur into the apex of a switchback) is left hanging in the gap. Following the line rounds the
+ * node by the corner radius, as the same bend inside an edge is. A bundle keeps the curve: the
+ * inside lane of a bundle pinches at that fillet, and opening the fold there was tried and bulged.
+ */
 function leavesLine(st: ZoomState, m: ConnMember, coords: Polyline): boolean {
     const uPx = preparedPx(st, m.pu.edge);
     const vPx = preparedPx(st, m.pv.edge);
@@ -1085,6 +1093,12 @@ function leavesLine(st: ZoomState, m: ConnMember, coords: Polyline): boolean {
         .concat(firstPortion(m.pv.end === 'a' ? vPx : reversed(vPx), m.pv.end === 'a' ? st.frontA[m.pv.edge] : st.frontB[m.pv.edge]));
     // A lane runs its own offset from the line, so only what is beyond that counts.
     const limit = Math.max(Math.abs(m.lateral), Math.abs(m.lateralOut)) + FOLLOW_ABOVE_LANES * st.spacing;
+    const g = st.graph;
+    if (g.edges[m.pu.edge].order.length === 1 && g.edges[m.pv.edge].order.length === 1) {
+        const node = g.nodes[m.pu.node];
+        const cover = Math.max(Math.abs(m.lateral), Math.abs(m.lateralOut)) + st.width / 2 + st.casing;
+        if (distToPolyline(node.x * st.scale, node.y * st.scale, coords) > cover) return true;
+    }
     for (let i = 0; i < coords.length; i += 2) {
         // The first segment within the limit settles the vertex; the nearest one is not needed.
         let within = false;
@@ -1098,6 +1112,18 @@ function leavesLine(st: ZoomState, m: ConnMember, coords: Polyline): boolean {
         if (!within) return true;
     }
     return false;
+}
+
+function distToPolyline(x: number, y: number, p: Polyline): number {
+    let best = Infinity;
+    for (let k = 2; k < p.length; k += 2) {
+        const x1 = p[k - 2], y1 = p[k - 1];
+        const dx = p[k] - x1, dy = p[k + 1] - y1;
+        const len = dx * dx + dy * dy;
+        const t = len ? Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / len)) : 0;
+        best = Math.min(best, Math.hypot(x - x1 - t * dx, y - y1 - t * dy));
+    }
+    return best;
 }
 
 /** The Bezier of a tail that does not slide (see `resolveTail`). */

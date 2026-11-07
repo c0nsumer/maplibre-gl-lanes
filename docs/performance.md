@@ -91,19 +91,19 @@ RAMBA:
 
 | Zoom | Full layout | Path vertices | Merged edges | Mesh build | Mesh vertices | Mesh size | Culled layout, phone view |
 |---|---|---|---|---|---|---|---|
-| 12 | 20 ms | 6174 | 197 | 4 ms | 34422 | 1.7 MB | 20 ms, 295 of 492 edges |
-| 14 | 21 ms | 15008 | 71 | 7 ms | 61463 | 3.0 MB | 17 ms, 310 of 492 edges |
-| 16 | 26 ms | 30859 | 9 | 12 ms | 98681 | 4.8 MB | 5 ms, 49 of 492 edges |
-| 18 | 31 ms | 54921 | 1 | 17 ms | 147614 | 7.2 MB | 2 ms, 12 of 492 edges |
+| 12 | 19 ms | 6185 | 197 | 4 ms | 34472 | 1.7 MB | 20 ms, 295 of 492 edges |
+| 14 | 25 ms | 15004 | 71 | 7 ms | 61455 | 3.0 MB | 17 ms, 310 of 492 edges |
+| 16 | 27 ms | 30873 | 9 | 13 ms | 98709 | 4.8 MB | 7 ms, 49 of 492 edges |
+| 18 | 30 ms | 54946 | 1 | 17 ms | 147664 | 7.2 MB | 2 ms, 12 of 492 edges |
 
 MFO:
 
 | Zoom | Full layout | Path vertices | Merged edges | Mesh build | Mesh vertices | Mesh size | Culled layout, phone view |
 |---|---|---|---|---|---|---|---|
-| 12 | 7 ms | 5072 | 7 | 1 ms | 16014 | 0.8 MB | 7 ms, 36 of 43 edges |
-| 14 | 14 ms | 12402 | 1 | 4 ms | 31114 | 1.5 MB | 1 ms, 4 of 43 edges |
-| 16 | 20 ms | 26922 | 1 | 7 ms | 59672 | 2.9 MB | 1 ms, 4 of 43 edges |
-| 18 | 33 ms | 54379 | 0 | 14 ms | 114729 | 5.7 MB | under 1 ms, 0 of 43 edges |
+| 12 | 7 ms | 5075 | 7 | 2 ms | 16007 | 0.8 MB | 7 ms, 36 of 43 edges |
+| 14 | 13 ms | 12402 | 1 | 4 ms | 31114 | 1.5 MB | 1 ms, 4 of 43 edges |
+| 16 | 19 ms | 26922 | 1 | 8 ms | 59672 | 2.9 MB | 1 ms, 4 of 43 edges |
+| 18 | 30 ms | 54379 | 0 | 13 ms | 114729 | 5.7 MB | under 1 ms, 0 of 43 edges |
 
 MFO is a small network of dense lines, so at z12 the phone view holds
 almost all of it and the culled build is the full one. The example

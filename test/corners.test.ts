@@ -114,3 +114,34 @@ describe('turns at a junction', () => {
         }
     });
 });
+
+describe('a turn at a switchback junction', () => {
+    // A route bends sharply at a node where another route ends: a spur into
+    // the apex of a switchback. The node front cuts the through lane back
+    // on both legs, and a curve between the cut ends stays close to both
+    // legs while passing the apex by lanes, which left the spur's end
+    // hanging in the gap. The turn has to reach the node.
+    const graph = () => {
+        const g = buildLineGraph([
+            route('through', [[-83.18, 42.8], [-83.19, 42.8], [-83.183, 42.794]]),
+            route('spur', [[-83.195, 42.805], [-83.19, 42.8]]),
+        ], {routeProperty: 'route_id'});
+        orderLanes(g);
+        return g;
+    };
+    it('reaches the node where a lane ends', () => {
+        const g = graph();
+        const apex = g.nodes.find((n) => n.ports.length === 3)!;
+        for (const z of [15, 17, 18]) {
+            const scale = 512 * Math.pow(2, z);
+            const layout = layoutAtZoom(g, z, style);
+            const turn = layout.paths.find((p) => p.kind === 'connector' && p.route === 'through')!;
+            expect(deviation([apex.x * scale, apex.y * scale], turn.coords)).toBeLessThan(style().spacing / 2);
+            // The spur's lane runs to the node, as before.
+            const spur = layout.paths.find((p) => p.kind === 'lane' && p.route === 'spur')!;
+            const c = spur.coords;
+            const ends = [Math.hypot(c[0] - apex.x * scale, c[1] - apex.y * scale), Math.hypot(c[c.length - 2] - apex.x * scale, c[c.length - 1] - apex.y * scale)];
+            expect(Math.min(...ends)).toBeLessThan(0.01);
+        }
+    });
+});

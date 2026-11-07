@@ -3,6 +3,18 @@
 All notable changes to maplibre-gl-lanes are recorded here. The format
 follows Keep a Changelog, and the project uses semantic versioning.
 
+## Unreleased
+
+### Fixed
+
+- A lane turning on its own through a switchback junction now reaches the
+  node. The curve between its two cut ends stayed close to both legs while
+  passing the apex by up to two lanes, so a trail that ended at that node, a
+  spur into the apex, stopped short of the lane it joins. Where the curve
+  would not cover the node, the lane follows the line and rounds the node by
+  the corner radius, as the same bend inside an edge is rounded. Bundles are
+  unchanged.
+
 ## 1.4.0 - 2026-11-01
 
 ### Changed
