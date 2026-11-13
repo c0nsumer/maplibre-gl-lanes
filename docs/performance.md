@@ -91,23 +91,23 @@ RAMBA:
 
 | Zoom | Full layout | Path vertices | Merged edges | Mesh build | Mesh vertices | Mesh size | Culled layout, phone view |
 |---|---|---|---|---|---|---|---|
-| 12 | 19 ms | 6185 | 197 | 4 ms | 34472 | 1.7 MB | 20 ms, 295 of 492 edges |
-| 14 | 25 ms | 15004 | 71 | 7 ms | 61455 | 3.0 MB | 17 ms, 310 of 492 edges |
-| 16 | 27 ms | 30873 | 9 | 13 ms | 98709 | 4.8 MB | 7 ms, 49 of 492 edges |
-| 18 | 30 ms | 54946 | 1 | 17 ms | 147664 | 7.2 MB | 2 ms, 12 of 492 edges |
+| 12 | 22 ms | 7500 | 197 | 6 ms | 36974 | 1.8 MB | 23 ms, 295 of 492 edges |
+| 14 | 25 ms | 16286 | 71 | 8 ms | 63853 | 3.1 MB | 19 ms, 310 of 492 edges |
+| 16 | 29 ms | 32149 | 9 | 12 ms | 101057 | 4.9 MB | 6 ms, 49 of 492 edges |
+| 18 | 33 ms | 56221 | 1 | 19 ms | 149814 | 7.3 MB | 2 ms, 12 of 492 edges |
 
 MFO:
 
 | Zoom | Full layout | Path vertices | Merged edges | Mesh build | Mesh vertices | Mesh size | Culled layout, phone view |
 |---|---|---|---|---|---|---|---|
-| 12 | 7 ms | 5075 | 7 | 2 ms | 16007 | 0.8 MB | 7 ms, 36 of 43 edges |
-| 14 | 13 ms | 12402 | 1 | 4 ms | 31114 | 1.5 MB | 1 ms, 4 of 43 edges |
-| 16 | 19 ms | 26922 | 1 | 8 ms | 59672 | 2.9 MB | 1 ms, 4 of 43 edges |
-| 18 | 30 ms | 54379 | 0 | 13 ms | 114729 | 5.7 MB | under 1 ms, 0 of 43 edges |
+| 12 | 8 ms | 5329 | 7 | 2 ms | 16465 | 0.8 MB | 7 ms, 36 of 43 edges |
+| 14 | 14 ms | 12616 | 1 | 4 ms | 31514 | 1.5 MB | 1 ms, 4 of 43 edges |
+| 16 | 21 ms | 27135 | 1 | 7 ms | 60070 | 3.0 MB | 1 ms, 4 of 43 edges |
+| 18 | 34 ms | 54593 | 0 | 14 ms | 115091 | 5.7 MB | under 1 ms, 0 of 43 edges |
 
 MFO is a small network of dense lines, so at z12 the phone view holds
 almost all of it and the culled build is the full one. The example
-fixture lays out in 2 to 5 ms at every zoom.
+fixture lays out in 3 to 7 ms at every zoom.
 
 The full layout includes opening the fold backs of bundled edges (see
 `docs/algorithms.md`, layout). With `openFolds` off, RAMBA's full layout
@@ -135,14 +135,14 @@ build per rebuild, in Node.js on the desktop machine:
 
 | Pan | Rebuilds | Total, no cache | Total, cached | Median, no cache | Median, cached |
 |---|---|---|---|---|---|
-| At z15 | 92 | 677 ms | 131 ms | 5.9 ms | 0.5 ms |
-| At z16 | 360 | 1079 ms | 107 ms | 2.8 ms | 0.1 ms |
-| Zooming from z15 to z16 while panning | 143 | 563 ms | 569 ms | 3.3 ms | 3.3 ms |
+| At z15 | 92 | 732 ms | 146 ms | 6.6 ms | 0.7 ms |
+| At z16 | 360 | 1177 ms | 129 ms | 3.0 ms | 0.1 ms |
+| Zooming from z15 to z16 while panning | 143 | 626 ms | 624 ms | 3.5 ms | 3.6 ms |
 
 "No cache" rebuilds everything on every pan, which is what the layer did
 before it kept its per-zoom work (`--no-cache` on the benchmark). At z15
-the cache takes the worst rebuild of the pan from 19 ms to 11 ms, and the
-90th percentile from 14 ms to 4 ms.
+the cache takes the worst rebuild of the pan from 22 ms to 11 ms, and the
+90th percentile from 16 ms to 4 ms.
 
 The third row moves the zoom as it pans, so almost every rebuild starts
 a new zoom and the cache has nothing to give it. A caller that lays out
@@ -159,8 +159,8 @@ A dashed route adds to the first build at a zoom. Its dash phase is read
 off every piece of the route, in view or not, so that the phase does not
 move with the viewport, and that builds every piece of the route. With
 all 14 RAMBA routes dashed (`--dashed 14` on the benchmark), the median
-rebuild of the third row goes from 3.1 ms to 12.0 ms and the 90th
-percentile from 6.6 ms to 19.7 ms. With the first 4 of the 14 dashed, the
+rebuild of the third row goes from 3.6 ms to 14.3 ms and the 90th
+percentile from 8.2 ms to 23.4 ms. With the first 4 of the 14 dashed, the
 median is 7.6 ms. The pan rows do not change: the phase is kept with the
 zoom.
 
