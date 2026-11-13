@@ -337,7 +337,8 @@ routes are not lifted. Use it to show a path picked off the highlighted
 route: pass the edge from `queryLane` (`hit.edge`), or the `edge` property
 of its `laneFeatures`. Those lanes get no halo and no outline. They stay in
 their place in the drawing order, so lanes drawn above them stay above
-them, dimmed. A connector counts as part of the edge it arrives from.
+them, dimmed. A connector is cut at each node it crosses, and each piece
+counts as part of the edge it lies along.
 `setHighlight(null)` clears `bright` with the rest of the highlight.
 Edge ids belong to one graph, and `setGraph` keeps the highlight. After
 `setGraph`, pass `bright` again with ids from the new graph.
@@ -421,7 +422,7 @@ transparent line layer.
 | `color` | The lane color. |
 | `direction` | `1` when the coordinates run in the direction of travel, `0` where the route's features cross the edge in both directions. |
 | `kind` | `'lane'` or `'connector'`. |
-| `edge` | The graph edge. For a connector, the edge it arrives from. |
+| `edge` | The graph edge. For a connector, the edge on its side of the node. |
 | `lanes` | How many routes share that edge. `1` where the route travels alone. |
 | `routes` | Their ids, in lane order from left to right traveling a to b. |
 
@@ -483,7 +484,7 @@ point, with the zoom that sets the pixel tolerance.
 | `distancePx` | How far the point is from the lane. |
 | `lngLat` | The nearest point on the lane, for anchoring a popup on the lane itself. |
 | `kind` | `'lane'` or `'connector'`. |
-| `edge` | The graph edge. For a connector, the edge it arrives from. |
+| `edge` | The graph edge. For a connector, the edge on its side of the node. |
 | `routes` | Every route on that edge, in lane order from left to right traveling a to b. |
 | `properties` | The edge's `uniformProperties` values. |
 
@@ -515,7 +516,8 @@ Draws lanes by the path under them rather than by route, for example by a diffic
 kept in the graph's `uniformProperties`. It may return any of `color`,
 `dash`, `dashColor` and `dashCap`. Every field left out keeps the route's
 own, and returning nothing keeps the route's look entirely. Casing,
-highlight and dimming stay per route.
+highlight and dimming stay per route. A connector takes the look of each
+edge it lies along, so a change of look falls at the node.
 
 It must be a pure function of the edge and the route. A callback cannot
 cross to a worker, so the layer resolves it into a table per edge and route
@@ -613,6 +615,12 @@ pieces.
 An edge in `mergedEdges` has no lane paths. The routes on it cross the
 merged junction on one connector, from the edge before to the edge after.
 
+A connector comes as one path per edge it lies along, cut where it crosses
+each node. On a merged junction that includes a piece on each merged edge.
+The pieces of one connector follow each other in `paths`, and each starts
+at the exact point where the one before it ends. A piece with no length is
+left out.
+
 ### `LanePath`
 
 | Field | What it holds |
@@ -624,9 +632,9 @@ merged junction on one connector, from the edge before to the edge after.
 | `kind` | `'lane'` or `'connector'`. |
 | `travel` | The direction of travel along `coords`: `1` with them, `-1` against, `0` where the route's features cross the edge in both directions. |
 | `startDistance` | Distance along the route where this path starts, which keeps the dash phase continuous. |
-| `edge` | The graph edge. For a connector, the edge it arrives from. |
-| `node` | Connectors only: the node they cross. |
-| `between` | Connectors only: the edges arrived on and left on. |
+| `edge` | The graph edge. For a connector, the edge on its side of the node. |
+| `node` | Connectors only: the node where the whole connector leaves its first edge. Every piece of one connector has the same `node`. |
+| `between` | Connectors only: the drawn edges the whole connector joins, arrived on and left on. Every piece of one connector has the same `between`. |
 
 `coords - anchors` is a pixel-space vector that stays the same at other
 zooms. That is what lets a mesh built at one zoom render correctly at

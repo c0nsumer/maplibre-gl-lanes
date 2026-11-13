@@ -10,6 +10,7 @@ import {buildLineGraph} from '../src/core/graph';
 import {orderLanes} from '../src/core/order';
 import {stabilizeLanes} from '../src/core/baselines';
 import {layoutAtZoom, type LanePath} from '../src/core/layout';
+import {wholeConnectors} from './connectors';
 
 const fc = JSON.parse(readFileSync(new URL('./fixtures/ramba.src.geojson', import.meta.url), 'utf8'));
 const g = buildLineGraph(fc.features, {routeProperty: 'route_id', colorProperty: 'route_colour'});
@@ -34,7 +35,7 @@ describe('parallel edges between the same two junctions', () => {
             expect(new Set(layout.paths).size).toBe(layout.paths.length);
             const lanes = new Map<string, LanePath>();
             for (const p of layout.paths) if (p.kind === 'lane') lanes.set(`${p.edge}:${p.route}`, p);
-            const connectors = layout.paths.filter((p) => p.kind === 'connector');
+            const connectors = wholeConnectors(layout.paths).filter((p) => p.kind === 'connector');
             const merged = new Set(layout.mergedEdges);
             const endOf = (p: LanePath, end: 'a' | 'b') => (end === 'a' ? [p.coords[0], p.coords[1]] : [p.coords[p.coords.length - 2], p.coords[p.coords.length - 1]]);
             const touches = (c: LanePath, e: number[]) => {

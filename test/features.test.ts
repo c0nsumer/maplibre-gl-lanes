@@ -149,15 +149,21 @@ describe('direction of travel on lane features', () => {
             const layer = new LaneLayer({id: 'lanes', graph: g, sizes: style});
             const f = layer.laneFeatures({zoom: 16, extent: 'full'}).features;
             expect(f.every((x) => x.properties!.direction === 1)).toBe(true);
+            // Each route's connector is cut at the node: a piece on the trunk, one on the branch.
             const connectors = f.filter((x) => x.properties!.kind === 'connector');
-            expect(connectors.length).toBe(3);
+            expect(connectors.length).toBe(6);
+            const trunkEdge = g.edges.find((e) => e.routes.length === 3)!.id;
             const same = (p: number[], q: number[]) => Math.abs(p[0] - q[0]) < 1e-9 && Math.abs(p[1] - q[1]) < 1e-9;
             for (const c of connectors) {
                 const cc = (c.geometry as GeoJSON.LineString).coordinates;
+                const others = f.filter((x) => x !== c && x.properties!.route === c.properties!.route).map((x) => (x.geometry as GeoJSON.LineString).coordinates);
+                // A piece starts where a lane or the trunk piece ends, and ends where the next starts.
+                expect(others.some((l) => same(l[l.length - 1], cc[0]))).toBe(true);
+                expect(others.some((l) => same(l[0], cc[cc.length - 1]))).toBe(true);
+                // The piece on the edge travel arrives by is the one a lane leads into.
+                const first = (c.properties!.edge === trunkEdge) === (digitized === 'west to east');
                 const lanes = f.filter((x) => x.properties!.route === c.properties!.route && x.properties!.kind === 'lane').map((x) => (x.geometry as GeoJSON.LineString).coordinates);
-                // A lane ends where the connector starts, and another starts where it ends.
-                expect(lanes.some((l) => same(l[l.length - 1], cc[0]))).toBe(true);
-                expect(lanes.some((l) => same(l[0], cc[cc.length - 1]))).toBe(true);
+                expect(lanes.some((l) => same(l[l.length - 1], cc[0]))).toBe(first);
                 // Travel order: the trunk lies west of the branches.
                 expect(cc[0][0] < cc[cc.length - 1][0]).toBe(digitized === 'west to east');
             }
@@ -313,7 +319,7 @@ describe('queryLane', () => {
 });
 
 describe('per-edge styling', () => {
-    it('draws each lane piece by its edge, connectors by the edge they arrive from', () => {
+    it('draws each lane and connector piece by its own edge', () => {
         const g = buildLineGraph(fc.features, {routeProperty: 'route_id', colorProperty: 'route_colour', uniformProperties: ['trail_name']});
         orderLanes(g);
         const byTrail = (edge: {properties?: Record<string, unknown>}) =>

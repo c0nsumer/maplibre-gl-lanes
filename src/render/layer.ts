@@ -333,7 +333,7 @@ export interface LaneHit {
     readonly lngLat: [number, number];
     /** Whether the nearest piece is an edge's lane or a connector across a node. */
     readonly kind: 'lane' | 'connector';
-    /** The graph edge (for a connector, the edge it arrives from). */
+    /** The graph edge (for a connector, the edge on its side of the node). */
     readonly edge: number;
     /** Every route on that edge, in lane order from left to right traveling a-to-b. */
     readonly routes: string[];

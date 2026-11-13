@@ -3,6 +3,21 @@
 All notable changes to maplibre-gl-lanes are recorded here. The format
 follows Keep a Changelog, and the project uses semantic versioning.
 
+## Unreleased
+
+### Changed
+
+- A connector is now cut at each node it crosses, one piece per edge it lies
+  along, and each piece carries the edge on its side of the node: its
+  `edge`, its per-edge look, its highlight under `bright`, its `queryLane`
+  hit, and its `laneFeatures` feature. A connector used to belong whole to
+  the edge it arrived from. So that edge's look, highlight, and feature ran
+  a node front's length past the node, onto an edge that may have another
+  name or rating, and the next edge's lane started that far short of it.
+  `laneFeatures` and `Layout.paths` now hold more connector pieces. Each
+  piece of one connector keeps its `node` and `between`, and the pieces
+  follow each other end to start. The drawn geometry is unchanged.
+
 ## 1.4.1 - 2026-11-07
 
 ### Fixed

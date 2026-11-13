@@ -202,6 +202,20 @@ chapter 6]:
   it joins, and the hook that can leave at an end is cut like an offset
   loop. The plain Bezier connector takes over only where there is nothing
   left to slide along.
+- Every connector is cut where it crosses a node, so each piece belongs to
+  the edge it lies along. That edge sets the piece's look, its highlight,
+  its hit, and its feature. A connector owned whole by one edge carried
+  that edge's look a node front's length past the node. A corner or a curve
+  is cut on the line through its own corner point, where the lane's two
+  legs would meet, square to the mean of the two directions. That line runs
+  through the node when the lane keeps its offset across it, and moves by
+  at most the change when the offset changes. The lanes of one group share
+  that change, so they share the line, and a change of look runs straight
+  across the bundle. A sliding piece is cut where the line it follows
+  crosses the node. A lane that turns back before it reaches either line,
+  at a switchback, is cut at its point nearest the node. A piece with no
+  length is left out. This is not from the cited papers. It was worked out
+  for this project.
 
 Differences from LOOM: the layout is computed in screen pixels for the
 current zoom rather than in map units for a fixed scale; lanes of routes

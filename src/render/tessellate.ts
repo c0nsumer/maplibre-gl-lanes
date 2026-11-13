@@ -5,7 +5,7 @@
  */
 
 import type {LaneLook, LanePath} from '../core/layout.js';
-import type {Polyline} from '../core/geometry.js';
+import type {Polyline, Vec} from '../core/geometry.js';
 
 export interface Mesh {
     /**
@@ -207,6 +207,8 @@ interface Chunk {
     vertexCount: number;
     startDistance: number;
     color: string;
+    /** The seam directions it was built with, as `seamKey` writes them. */
+    seams: string;
 }
 
 /**
@@ -239,15 +241,16 @@ export class TessellateCache {
     }
 
     /** @internal */
-    emit(b: MeshBuilder, p: LanePath, color: Uint8Array, opts: TessellateOptions): void {
+    emit(b: MeshBuilder, p: LanePath, color: Uint8Array, opts: TessellateOptions, before: Vec | null = null, after: Vec | null = null): void {
         const hit = this.chunks.get(p);
-        if (hit && hit.startDistance === p.startDistance && hit.color === p.look.color) {
+        const seams = seamKey(before, after);
+        if (hit && hit.startDistance === p.startDistance && hit.color === p.look.color && hit.seams === seams) {
             appendChunk(b, hit);
             return;
         }
         const nv = b.nv;
         const ni = b.ni;
-        tessellatePath(b, p.coords, p.anchors, color, p.startDistance, opts);
+        tessellatePath(b, p.coords, p.anchors, color, p.startDistance, opts, before, after);
         if (hit === undefined) {
             this.chunks.set(p, null);
             return;
@@ -261,6 +264,7 @@ export class TessellateCache {
             vertexCount: b.nv - nv,
             startDistance: p.startDistance,
             color: p.look.color,
+            seams,
         });
     }
 }
@@ -323,10 +327,13 @@ export function tessellate(paths: LanePath[], opts: TessellateOptions): Mesh {
             let c = colorCache.get(look.color);
             if (!c) colorCache.set(look.color, (c = parseColor(look.color)));
             const pieces: Piece[] = [];
-            for (const p of list) {
+            for (let k = 0; k < list.length; k++) {
+                const p = list[k];
                 const from = b.ni;
-                if (cache) cache.emit(b, p, c, opts);
-                else tessellatePath(b, p.coords, p.anchors, c, p.startDistance, opts);
+                const before = k > 0 ? seamDirection(list[k - 1], p, true) : null;
+                const after = k + 1 < list.length ? seamDirection(p, list[k + 1], false) : null;
+                if (cache) cache.emit(b, p, c, opts, before, after);
+                else tessellatePath(b, p.coords, p.anchors, c, p.startDistance, opts, before, after);
                 addPiece(pieces, from, b.ni - from, p.edge);
             }
             if (b.ni > start) {
@@ -405,7 +412,37 @@ function dotsOnPath(b: MeshBuilder, px: Polyline, anchorsPx: Polyline, color: Ui
     }
 }
 
-function tessellatePath(b: MeshBuilder, px: Polyline, anchorsPx: Polyline, color: Uint8Array, startDistance: number, opts: TessellateOptions): void {
+function seamKey(before: Vec | null, after: Vec | null): string {
+    return `${before ? before.join() : ''}|${after ? after.join() : ''}`;
+}
+
+/**
+ * Where `q` carries on from the end of `p` as the next piece of one connector, cut at a node: the
+ * unit direction of `q`'s first segment, read past repeated points as `tessellatePath` reads them.
+ * Caps there would only overlap, drawing the anti-aliased casing edge twice and adding two fans
+ * per cut, so the seam is joined as a vertex inside one path would be.
+ */
+function seamDirection(p: LanePath, q: LanePath, last: boolean): Vec | null {
+    if (p.kind !== 'connector' || q.kind !== 'connector' || p.between !== q.between || p.route !== q.route) return null;
+    const a = p.coords, c = q.coords, n = a.length;
+    if (n < 4 || c.length < 4 || a[n - 2] !== c[0] || a[n - 1] !== c[1]) return null;
+    if (last) {
+        let i = n - 4;
+        while (i > 0 && Math.abs(a[i] - a[n - 2]) < 1e-6 && Math.abs(a[i + 1] - a[n - 1]) < 1e-6) i -= 2;
+        const dx = a[n - 2] - a[i], dy = a[n - 1] - a[i + 1], l = Math.hypot(dx, dy);
+        return l < 1e-6 ? null : [dx / l, dy / l];
+    }
+    let j = 2;
+    while (j + 2 < c.length && Math.abs(c[j] - c[0]) < 1e-6 && Math.abs(c[j + 1] - c[1]) < 1e-6) j += 2;
+    const dx = c[j] - c[0], dy = c[j + 1] - c[1], l = Math.hypot(dx, dy);
+    return l < 1e-6 ? null : [dx / l, dy / l];
+}
+
+/**
+ * `before` and `after` are the directions of the pieces this one is joined to at its ends (see
+ * `seamDirection`); without one, that end gets a round cap.
+ */
+function tessellatePath(b: MeshBuilder, px: Polyline, anchorsPx: Polyline, color: Uint8Array, startDistance: number, opts: TessellateOptions, before: Vec | null = null, after: Vec | null = null): void {
     const pts: number[] = [];
     const anc: number[] = [];
     for (let i = 0; i < px.length; i += 2) {
@@ -469,10 +506,10 @@ function tessellatePath(b: MeshBuilder, px: Polyline, anchorsPx: Polyline, color
     }
 
     for (let i = 0; i < n; i++) {
-        const hasPrev = i > 0;
-        const hasNext = i < n - 1;
-        const dPrevX = hasPrev ? sdx[i - 1] : 0, dPrevY = hasPrev ? sdy[i - 1] : 0;
-        const dNextX = hasNext ? sdx[i] : 0, dNextY = hasNext ? sdy[i] : 0;
+        const hasPrev = i > 0 || !!before;
+        const hasNext = i < n - 1 || !!after;
+        const dPrevX = i > 0 ? sdx[i - 1] : before ? before[0] : 0, dPrevY = i > 0 ? sdy[i - 1] : before ? before[1] : 0;
+        const dNextX = i < n - 1 ? sdx[i] : after ? after[0] : 0, dNextY = i < n - 1 ? sdy[i] : after ? after[1] : 0;
         const nPrevX = dPrevY, nPrevY = -dPrevX;
         const nNextX = dNextY, nNextY = -dNextX;
 
@@ -486,13 +523,17 @@ function tessellatePath(b: MeshBuilder, px: Polyline, anchorsPx: Polyline, color
             fan(i, nPrevX, nPrevY, -nPrevX, -nPrevY, false);
             continue;
         }
+        // A seam with the next piece: this piece ends, and the next starts, on the join's miter.
+        const seamEnd = i === n - 1, seamStart = i === 0;
         let jx = nPrevX + nNextX;
         let jy = nPrevY + nNextY;
         const jl = Math.hypot(jx, jy);
         if (jl < 1e-9) {
-            pair(i, nPrevX, nPrevY, nPrevX, nPrevY, true);
-            fan(i, nPrevX, nPrevY, -nPrevX, -nPrevY, false);
-            pair(i, nNextX, nNextY, nNextX, nNextY, false);
+            if (!seamStart) {
+                pair(i, nPrevX, nPrevY, nPrevX, nPrevY, true);
+                fan(i, nPrevX, nPrevY, -nPrevX, -nPrevY, false);
+            }
+            if (!seamEnd) pair(i, nNextX, nNextY, nNextX, nNextY, false);
             continue;
         }
         jx /= jl;
@@ -505,11 +546,14 @@ function tessellatePath(b: MeshBuilder, px: Polyline, anchorsPx: Polyline, color
             const cross = dPrevX * dNextY - dPrevY * dNextX;
             // Right turn on screen (cross > 0 in y-down): outside is the left side.
             const outsideLeft = cross > 0;
-            pair(i, nPrevX, nPrevY, nPrevX, nPrevY, true);
-            if (outsideLeft) fan(i, nPrevX, nPrevY, nNextX, nNextY, false);
-            // Mirrored, the right side sweeps the other way round a semicircle to reach the tip.
-            else fan(i, -nPrevX, -nPrevY, -nNextX, -nNextY, true);
-            pair(i, nNextX, nNextY, nNextX, nNextY, false);
+            // At a seam the piece before draws the round join, and the piece after starts past it.
+            if (!seamStart) {
+                pair(i, nPrevX, nPrevY, nPrevX, nPrevY, true);
+                if (outsideLeft) fan(i, nPrevX, nPrevY, nNextX, nNextY, false);
+                // Mirrored, the right side sweeps the other way round a semicircle to reach the tip.
+                else fan(i, -nPrevX, -nPrevY, -nNextX, -nNextY, true);
+            }
+            if (!seamEnd) pair(i, nNextX, nNextY, nNextX, nNextY, false);
         }
     }
 }

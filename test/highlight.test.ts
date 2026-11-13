@@ -169,7 +169,7 @@ describe('mesh pieces', () => {
             if (mesh.groupDots[gi][1]) dotted++;
             for (const [, , edge] of [...mesh.groupPieces[gi], ...mesh.groupDotPieces[gi]]) {
                 expect(graph.edges[edge]).toBeDefined();
-                // The edge carries the group's route: a piece names its own edge, or the one a connector arrives from.
+                // The edge carries the group's route: a piece names its own edge, a connector piece too.
                 expect(graph.edges[edge].routes).toContain(mesh.groupRoutes[gi]);
             }
             // Neighbors on one edge are merged, so a piece boundary is an edge boundary.

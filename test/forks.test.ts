@@ -10,6 +10,7 @@ import {orderLanes} from '../src/core/order';
 import {stabilizeLanes} from '../src/core/baselines';
 import {layoutAtZoom} from '../src/core/layout';
 import {offsetPolylineSlidingAnchored, type Polyline} from '../src/core/geometry';
+import {wholeConnectors} from './connectors';
 
 function distToPolyline(x: number, y: number, p: Polyline): number {
     let best = Infinity;
@@ -60,7 +61,7 @@ describe('a route that forks inside a merged junction', () => {
         expect(layout.mergedEdges.length).toBeGreaterThan(0);
         let forks = 0;
         for (const route of ['-84', '-124']) {
-            const find = (from: number) => layout.paths.find((p) => p.kind === 'connector' && p.route === route && p.between![0] === from && p.between![1] === 5);
+            const find = (from: number) => wholeConnectors(layout.paths).find((p) => p.kind === 'connector' && p.route === route && p.between![0] === from && p.between![1] === 5);
             const a = find(1), b = find(4);
             expect(a && b).toBeTruthy();
             forks++;

@@ -4,6 +4,7 @@ import {buildLineGraph} from '../src/core/graph';
 import {orderLanes} from '../src/core/order';
 import {layoutAtZoom, laneOffset} from '../src/core/layout';
 import {polylineLength, type Polyline} from '../src/core/geometry';
+import {wholeConnectors} from './connectors';
 
 function load(name: string) {
     return JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
@@ -33,7 +34,7 @@ function pairsOffPitch(name: string, zoom: number, limitPx: number): {pairs: num
     const spacing = 8;
     const layout = layoutAtZoom(g, zoom, () => ({spacing, width: 6, casingWidth: 1}));
     const conns = new Map<string, Polyline>();
-    for (const p of layout.paths) if (p.kind === 'connector') conns.set(`${p.node}:${p.route}:${p.between![0]}:${p.between![1]}`, p.coords);
+    for (const p of wholeConnectors(layout.paths)) if (p.kind === 'connector') conns.set(`${p.node}:${p.route}:${p.between![0]}:${p.between![1]}`, p.coords);
     let pairs = 0, off = 0, worst = 0, closest = Infinity;
     for (const node of g.nodes) {
         const groups = new Map<string, {lateral: number; coords: Polyline}[]>();

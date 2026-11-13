@@ -15,6 +15,7 @@ import {buildLineGraph, type LineGraph} from '../src/core/graph';
 import {orderLanes} from '../src/core/order';
 import {stabilizeLanes} from '../src/core/baselines';
 import {layoutAtZoom, type LanePath} from '../src/core/layout';
+import {wholeConnectors} from './connectors';
 
 const sizesAt = (z: number) => {
     const width = z <= 14 ? 2 + ((z - 10) / 4) * 2 : 4 + ((z - 14) / 4) * 3;
@@ -35,7 +36,7 @@ function crossings(g: LineGraph, zoom: number): {all: number; unjoined: string[]
     const merged = new Set(layout.mergedEdges);
     const lanes = new Map<string, LanePath>();
     for (const p of layout.paths) if (p.kind === 'lane') lanes.set(`${p.edge}:${p.route}`, p);
-    const connectors = layout.paths.filter((p) => p.kind === 'connector');
+    const connectors = wholeConnectors(layout.paths).filter((p) => p.kind === 'connector');
     type Port = {edge: number; end: 'a' | 'b'};
     const pairs = new Map<string, {route: string; a: Port; b: Port}>();
     // From a drawn edge, along every branch of merged edges, to each drawn edge the route comes out on.

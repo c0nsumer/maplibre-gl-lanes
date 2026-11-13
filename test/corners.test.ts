@@ -8,6 +8,7 @@ import {buildLineGraph} from '../src/core/graph';
 import {orderLanes} from '../src/core/order';
 import {layoutAtZoom} from '../src/core/layout';
 import {roundBends, type Polyline} from '../src/core/geometry';
+import {wholeConnectors} from './connectors';
 
 const style = () => ({spacing: 8, width: 6, casingWidth: 1});
 
@@ -83,7 +84,7 @@ describe('turns at a junction', () => {
 
     it('runs to the corner and rounds it, rather than bowing across', () => {
         const g = graph();
-        const turn = layoutAtZoom(g, 17, style).paths.find((p) => p.kind === 'connector' && p.route === 'turn')!;
+        const turn = wholeConnectors(layoutAtZoom(g, 17, style).paths).find((p) => p.kind === 'connector' && p.route === 'turn')!;
         const c = turn.coords;
         // A corner keeps the straight run of each leg: the first and last
         // segments are long, and everything bends in the middle.
@@ -104,7 +105,7 @@ describe('turns at a junction', () => {
             route('b', [[-83.2, 42.8], [-83.19, 42.8]]),
         ], {routeProperty: 'route_id'});
         orderLanes(g);
-        const conns = layoutAtZoom(g, 17, style).paths.filter((p) => p.kind === 'connector');
+        const conns = wholeConnectors(layoutAtZoom(g, 17, style).paths).filter((p) => p.kind === 'connector');
         // Sampled arcs, so every step is short: no long straight run to a corner.
         for (const p of conns) {
             const c = p.coords;
@@ -135,7 +136,7 @@ describe('a turn at a switchback junction', () => {
         for (const z of [15, 17, 18]) {
             const scale = 512 * Math.pow(2, z);
             const layout = layoutAtZoom(g, z, style);
-            const turn = layout.paths.find((p) => p.kind === 'connector' && p.route === 'through')!;
+            const turn = wholeConnectors(layout.paths).find((p) => p.kind === 'connector' && p.route === 'through')!;
             expect(deviation([apex.x * scale, apex.y * scale], turn.coords)).toBeLessThan(style().spacing / 2);
             // The spur's lane runs to the node, as before.
             const spur = layout.paths.find((p) => p.kind === 'lane' && p.route === 'spur')!;

@@ -9,6 +9,7 @@ import {buildLineGraph} from '../src/core/graph';
 import {orderLanes} from '../src/core/order';
 import {layoutAtZoom, type LanePath, type Layout} from '../src/core/layout';
 import {removeLoopsAnchored} from '../src/core/geometry';
+import {wholeConnectors} from './connectors';
 
 function line(route: string, coords: number[][]): GeoJSON.Feature {
     return {type: 'Feature', properties: {route, color: '#000'}, geometry: {type: 'LineString', coordinates: coords}};
@@ -19,7 +20,7 @@ const style = () => ({spacing: 8, width: 6, casingWidth: 1});
 function breaks(g: ReturnType<typeof buildLineGraph>, layout: Layout): string[] {
     const lanes = new Map<string, LanePath>();
     const conns = new Map<string, LanePath>();
-    for (const p of layout.paths) {
+    for (const p of wholeConnectors(layout.paths)) {
         if (p.kind === 'lane') lanes.set(`${p.edge}:${p.route}`, p);
         else conns.set(`${p.route}:${p.between![0]}:${p.between![1]}`, p);
     }
@@ -76,18 +77,22 @@ describe('short edges merge into their junctions', () => {
         expect(layout.mergedEdges).toEqual([shortEdge.id]);
         // A passes through: no lane on the short edge, one connector from the trunk to the south branch.
         expect(layout.paths.some((p) => p.kind === 'lane' && p.edge === shortEdge.id && p.route === 'A')).toBe(false);
-        const a = layout.paths.find((p) => p.kind === 'connector' && p.route === 'A')!;
+        const a = wholeConnectors(layout.paths).find((p) => p.kind === 'connector' && p.route === 'A')!;
         expect(a.between).toEqual([trunkEdge.id, south.id]);
+        // Its pieces lie along the trunk, the merged edge and the branch, in that order.
+        const pieces = layout.paths.filter((p) => p.kind === 'connector' && p.route === 'A');
+        expect(pieces.map((p) => p.edge)).toEqual([trunkEdge.id, shortEdge.id, south.id]);
         // B ends on the short edge: one piece runs from its trunk lane to its
         // end there, so the route keeps its visible extent.
-        const b = layout.paths.find((p) => p.kind === 'connector' && p.route === 'B')!;
+        const b = wholeConnectors(layout.paths).find((p) => p.kind === 'connector' && p.route === 'B')!;
         expect(b.between).toEqual([trunkEdge.id, shortEdge.id]);
+        expect(layout.paths.filter((p) => p.kind === 'connector' && p.route === 'B').map((p) => p.edge)).toEqual([trunkEdge.id, shortEdge.id]);
         const scale = layout.scale;
         const n2 = g.nodes[shortEdge.b === trunkEdge.b || shortEdge.b === trunkEdge.a ? shortEdge.a : shortEdge.b];
         const endDist = Math.hypot(b.coords[b.coords.length - 2] - n2.x * scale, b.coords[b.coords.length - 1] - n2.y * scale);
         expect(endDist).toBeLessThan(style().spacing);
         expect(breaks(g, layout)).toEqual([]);
-        for (const p of layout.paths) expect(selfIntersects(p.coords)).toBe(false);
+        for (const p of wholeConnectors(layout.paths)) expect(selfIntersects(p.coords)).toBe(false);
     });
 
     it('keeps the edge at a zoom where it is long enough', () => {
@@ -115,7 +120,7 @@ describe('RAMBA junctions across zooms', () => {
             // A connector crosses itself only where the mapped line does: a hairpin whose apex
             // is merged, or a knot in the line. Loop removal with no window limit finds nothing
             // else to cut in such a piece.
-            const crossing = layout.paths.filter((p) => p.kind === 'connector' && selfIntersects(p.coords)
+            const crossing = wholeConnectors(layout.paths).filter((p) => p.kind === 'connector' && selfIntersects(p.coords)
                 && removeLoopsAnchored(p.coords, p.anchors, Infinity).points.length !== p.coords.length);
             expect(crossing.map((p) => `${p.route} ${p.between!.join('->')}`)).toEqual([]);
             // A connector leaves its lane ends along them, never sideways. A
@@ -134,7 +139,7 @@ describe('RAMBA junctions across zooms', () => {
             };
             const spacing = styleAt(z).spacing;
             const far = (c: number[], i: number, j: number) => Math.hypot(c[j] - c[i], c[j + 1] - c[i + 1]) > 1.5 * spacing;
-            const jumps = layout.paths.filter((p) => {
+            const jumps = wholeConnectors(layout.paths).filter((p) => {
                 if (p.kind !== 'connector' || p.coords.length < 8) return false;
                 const c = p.coords, n = c.length;
                 return (far(c, 0, 2) && turn(c, 0, 2, 4) > 30) || (far(c, n - 4, n - 2) && turn(c, n - 6, n - 4, n - 2) > 30);

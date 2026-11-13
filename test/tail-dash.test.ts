@@ -39,12 +39,13 @@ describe('dash phase across a sliding tail', () => {
             const steps = g.chains.get('B')![0].steps;
             expect(steps).toHaveLength(2);
             expect(steps[side === 'end' ? 1 : 0].edge).toBe(shortEdge.id);
+            // The lane, and the slide cut at the node into a piece on each edge.
             const pieces = layout.paths.filter((p) => p.route === 'B');
-            const lane = pieces.find((p) => p.kind === 'lane')!;
-            const slide = pieces.find((p) => p.kind === 'connector')!;
-            expect(pieces).toHaveLength(2);
-            if (side === 'end') expect(span(slide)[0]).toBeCloseTo(span(lane)[1], 6);
-            else expect(span(lane)[0]).toBeCloseTo(span(slide)[1], 6);
+            expect(pieces.map((p) => p.kind).sort()).toEqual(['connector', 'connector', 'lane']);
+            expect(new Set(pieces.filter((p) => p.kind === 'connector').map((p) => p.edge)).size).toBe(2);
+            // In travel order, each piece takes up the distance where the last left off.
+            const spans = pieces.map(span).sort((x, y) => x[0] - y[0]);
+            for (let i = 1; i < spans.length; i++) expect(spans[i][0]).toBeCloseTo(spans[i - 1][1], 6);
         });
     }
 });

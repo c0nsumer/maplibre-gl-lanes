@@ -55,11 +55,14 @@ export interface LanePath {
     travel: 1 | -1 | 0;
     /** Distance (px at the layout zoom) along the route where this path starts; keeps dash phase continuous. */
     startDistance: number;
-    /** The graph edge: a lane's own, and for a connector the edge it arrives from. */
+    /**
+     * The graph edge: a lane's own, and for a connector piece the edge on its side of the node. A
+     * connector is cut at every node it crosses, so each piece lies along one edge.
+     */
     edge: number;
-    /** Connectors only: the node they cross. */
+    /** Connectors only: the junction's node, where the connector leaves its first edge. */
     node?: number;
-    /** Connectors only: the edges arrived on and left on. */
+    /** Connectors only: the drawn edges the whole connector joins, arrived on and left on. */
     between?: [number, number];
 }
 
@@ -95,7 +98,7 @@ export interface LayoutOptions {
     openFolds?: boolean;
     /** Only emit these routes' paths; the others still shape the geometry. */
     routes?: Iterable<string>;
-    /** Per-edge look of a route's lane; a connector takes the look of the edge it arrives from. */
+    /** Per-edge look of a route's lane; each piece of a connector takes the look of its own edge. */
     laneStyle?: LaneStyle;
     /** Reuse zoom-dependent work between calls, as during a pan (see `LayoutCache`). */
     cache?: LayoutCache;
@@ -119,6 +122,8 @@ const SIMPLIFY_TOLERANCE_PX = 0.25;
 /** Simplification tolerance per px of widest offset: zigzags hidden under a bundle cross its lanes. */
 const GENERALIZE_PER_OFFSET = 0.25;
 const MIN_FRONT_MARGIN_LANES = 0.6;
+/** A connector piece shorter than this, px, is a cut at its end, and joins its neighbor. */
+const MIN_PIECE_PX = 1e-3;
 const MAX_FRONT_FRACTION = 0.42;
 /** Below this many lane pitches a clique's reference curve is not shared (see `buildGroup`). */
 const CLIQUE_MIN_REF_LANES = 1.5;
@@ -197,7 +202,6 @@ interface ConnMember {
     /** Lane offset arriving, and leaving, px, signed in the direction of travel. */
     lateral: number;
     lateralOut: number;
-    travel: 1 | -1 | 0;
     via: {edge: number; forward: boolean}[];
     /** The route crosses the same merged edge on another connector of this junction. */
     forked?: boolean;
@@ -223,7 +227,7 @@ interface TailPlan {
      * The sliding piece, in mode 1. Two tails that differ only in their middle merged edges
      * (parallel edges) share a key, so a later build cannot find each one's slide by key.
      */
-    slide?: LanePath;
+    slide?: LanePath[];
 }
 
 interface ZoomState {
@@ -263,7 +267,7 @@ interface ZoomState {
     lanes: (Lane | undefined)[];
     lanePaths: (LanePath | null | undefined)[];
     /** Per connector key, null once the geometry has refused it. */
-    connPaths: Map<number, LanePath | null>;
+    connPaths: Map<number, LanePath[] | null>;
     /** Routes whose pieces carry their dash phase (see `assignDashPhase`). */
     phased: Set<string>;
 }
@@ -337,9 +341,10 @@ export function layoutAtZoom(g: LineGraph, zoom: number, styleAt: SizesAtZoom, o
             if (!inView[plan.port.edge] && !t.edges.some((s) => inView[s.edge])) continue;
             resolveTail(st, plan);
             if (plan.mode !== 1 || (only && !only.has(t.route))) continue;
-            const path = plan.slide!;
-            vertices += path.coords.length / 2;
-            paths.push(path);
+            for (const path of plan.slide!) {
+                vertices += path.coords.length / 2;
+                paths.push(path);
+            }
         }
         for (const plan of tails) {
             if (plan.mode === 1 || (only && !only.has(plan.tail.route))) continue;
@@ -376,10 +381,10 @@ export function layoutAtZoom(g: LineGraph, zoom: number, styleAt: SizesAtZoom, o
             for (const m of grp.members) {
                 // A tail that slides needs no connector: step 2 drew the slide.
                 if (m.plan?.mode === 1 || (only && !only.has(m.route))) continue;
-                const path = st.connPaths.get(m.key);
-                if (!path) continue;
-                vertices += path.coords.length / 2;
-                paths.push(path);
+                for (const path of st.connPaths.get(m.key) ?? []) {
+                    vertices += path.coords.length / 2;
+                    paths.push(path);
+                }
             }
         }
     }
@@ -539,7 +544,6 @@ function touchesView(j: Junction, inView: Uint8Array): boolean {
 function planJunction(st: ZoomState, ji: number): {groups: ConnGroup[]; tails: TailPlan[]} {
     const known = st.groups[ji];
     if (known) return {groups: known, tails: st.tails[ji]!};
-    const g = st.graph;
     const j = st.junctions[ji];
     const byKey = new Map<string, ConnGroup>();
     const groups: ConnGroup[] = [];
@@ -548,10 +552,6 @@ function planJunction(st: ZoomState, ji: number): {groups: ConnGroup[]; tails: T
         const pv = j.ports[t.v];
         const lateral = offsetTravel(st, pu.edge, t.route, pu.end === 'b');
         const lateralOut = offsetTravel(st, pv.edge, t.route, pv.end === 'a');
-        // The connector runs a->b along u when it arrives at u's b end, and
-        // along v when it leaves from v's a end.
-        const tu = travelSign(g.edges[pu.edge].direction.get(t.route)) * (pu.end === 'b' ? 1 : -1);
-        const tv = travelSign(g.edges[pv.edge].direction.get(t.route)) * (pv.end === 'a' ? 1 : -1);
         const key = `${pu.edge}:${pv.edge}:${(lateral - lateralOut).toFixed(3)}`;
         let grp = byKey.get(key);
         if (!grp) {
@@ -561,7 +561,7 @@ function planJunction(st: ZoomState, ji: number): {groups: ConnGroup[]; tails: T
         }
         grp.members.push({
             route: t.route, key: connKey(st, t.route, pu.edge, pu.end, pv.edge, pv.end), pu, pv,
-            lateral, lateralOut, travel: (tu || tv) as 1 | -1 | 0, via: t.via,
+            lateral, lateralOut, via: t.via,
         });
     }
     // Forks inside the junction: one route on two connectors over one merged edge.
@@ -582,7 +582,6 @@ function planJunction(st: ZoomState, ji: number): {groups: ConnGroup[]; tails: T
         const p = j.ports[t.port];
         const far = t.edges[t.side === 'end' ? t.edges.length - 1 : 0];
         const step = t.edges[t.side === 'end' ? 0 : t.edges.length - 1];
-        const travel = (travelSign(g.edges[p.edge].direction.get(t.route)) * (t.side === 'end' ? (p.end === 'b' ? 1 : -1) : (p.end === 'a' ? 1 : -1))) as 1 | -1 | 0;
         // Keyed in travel order: the end left by, then the end entered by.
         const plan: TailPlan = {
             tail: t, port: p, mode: 0,
@@ -597,7 +596,7 @@ function planJunction(st: ZoomState, ji: number): {groups: ConnGroup[]; tails: T
         groups.push({
             edgeU: u, edgeV: v,
             members: [{
-                route: t.route, pu: p, pv: p, lateral: 0, lateralOut: 0, travel, via: [], plan,
+                route: t.route, pu: p, pv: p, lateral: 0, lateralOut: 0, via: [], plan,
                 key: t.side === 'end' ? connKey(st, t.route, u, p.end, v, step.forward ? 'a' : 'b') : connKey(st, t.route, u, step.forward ? 'b' : 'a', v, p.end),
             }],
         });
@@ -804,7 +803,6 @@ function guideOf(st: ZoomState, parts: Polyline[], edges: number[]): Polyline {
 function resolveTail(st: ZoomState, plan: TailPlan): void {
     if (plan.mode) return;
     plan.mode = 2;
-    const g = st.graph;
     const t = plan.tail;
     const p = plan.port;
     const portLane = laneOf(st, p.edge, t.route);
@@ -830,12 +828,9 @@ function resolveTail(st: ZoomState, plan: TailPlan): void {
     }
     const {points: coords, anchors} = removeLoopsAnchored(slide.points, slide.anchors, SNAP_HOOK_LANES * st.spacing);
     if (coords.length < 4) return;
-    const travel = travelSign(g.edges[p.edge].direction.get(t.route)) * (t.side === 'end' ? (p.end === 'b' ? 1 : -1) : (p.end === 'a' ? 1 : -1));
     const between: [number, number] = t.side === 'end' ? [p.edge, far.edge] : [far.edge, p.edge];
-    plan.slide = {
-        route: t.route, look: lookOf(st, g.edges[p.edge], t.route), coords, anchors,
-        kind: 'connector', travel: travel as 1 | -1 | 0, startDistance: 0, edge: between[0], node: p.node, between,
-    };
+    const steps = t.side === 'end' ? [{edge: p.edge, forward: p.end === 'b'}, ...t.edges] : [...t.edges, {edge: p.edge, forward: p.end === 'a'}];
+    plan.slide = splitAtNodes(st, t.route, coords, anchors, steps, p.node, between, true);
     st.connPaths.set(plan.key, plan.slide);
     plan.mode = 1;
 }
@@ -851,12 +846,7 @@ function islandPaths(st: ZoomState, isl: JunctionIsland): LanePath[] {
     const slide = offsetPolylineSlidingAnchored(guide, d0, d1);
     if (slide.points.length >= 4) {
         const e = g.edges[first.edge];
-        const travel = (travelSign(e.direction.get(isl.route)) * (first.forward ? 1 : -1)) as 1 | -1 | 0;
-        return (isl.paths = [{
-            route: isl.route, look: lookOf(st, e, isl.route), coords: slide.points, anchors: slide.anchors,
-            kind: 'connector', travel, startDistance: 0, edge: first.edge, node: first.forward ? e.a : e.b,
-            between: [first.edge, last.edge],
-        }]);
+        return (isl.paths = splitAtNodes(st, isl.route, slide.points, slide.anchors, isl.steps, first.forward ? e.a : e.b, [first.edge, last.edge], true));
     }
     const lanes: LanePath[] = [];
     for (const s of isl.steps) {
@@ -883,14 +873,17 @@ function assignDashPhase(st: ZoomState, route: string): void {
         for (const s of chain.steps) forwardOn.set(s.edge, s.forward);
     }
     const travelEnd = (edge: number): 'a' | 'b' => (forwardOn.get(edge) === false ? 'a' : 'b');
-    const pieces: LanePath[] = [];
-    // Per piece, by its index: whether its coordinates run with the route's travel.
+    // The walk goes by whole connectors, each a list of its pieces end to start, so the phase
+    // does not depend on where a connector was cut at its nodes.
+    const pieces: LanePath[][] = [];
+    // Per walked unit, by its index: whether its coordinates run with the route's travel.
     const index = new Map<LanePath, number>();
     const along: boolean[] = [];
-    const add = (p: LanePath | null | undefined, withTravel: boolean) => {
-        if (p && !index.has(p)) {
-            index.set(p, pieces.length);
-            pieces.push(p);
+    const add = (p: LanePath | readonly LanePath[] | null | undefined, withTravel: boolean) => {
+        const list = !p ? [] : Array.isArray(p) ? p : [p as LanePath];
+        if (list.length && !index.has(list[0])) {
+            for (const q of list) index.set(q, pieces.length);
+            pieces.push(list);
             along.push(withTravel);
         }
     };
@@ -912,11 +905,15 @@ function assignDashPhase(st: ZoomState, route: string): void {
                 if (m.route !== route || m.plan?.mode === 1) continue;
                 // A connector sets off from the lane end it arrives by; a tail's Bezier from the
                 // lane the route reaches first.
-                add(st.connPaths.get(m.key), !!m.plan || m.pu.end === travelEnd(m.pu.edge));
+                const withTravel = !!m.plan || m.pu.end === travelEnd(m.pu.edge);
+                add(st.connPaths.get(m.key), withTravel);
             }
         }
         for (const isl of st.junctions[ji].islands) {
-            if (isl.route === route) for (const p of islandPaths(st, isl)) add(p, true);
+            if (isl.route !== route) continue;
+            const ps = islandPaths(st, isl);
+            if (ps[0]?.kind === 'connector') add(ps, true);
+            else for (const p of ps) add(p, true);
         }
     }
     if (!pieces.length) return;
@@ -927,9 +924,9 @@ function assignDashPhase(st: ZoomState, route: string): void {
     const atPoint = new Map<number, Map<number, number[]>>();
     const endsAt: number[][] = new Array(2 * n);
     for (let i = 0; i < n; i++) {
-        const c = pieces[i].coords;
+        const first = pieces[i][0].coords, last = pieces[i][pieces[i].length - 1].coords;
         for (let end = 0; end < 2; end++) {
-            const x = end ? c[c.length - 2] : c[0], y = end ? c[c.length - 1] : c[1];
+            const x = end ? last[last.length - 2] : first[0], y = end ? last[last.length - 1] : first[1];
             let row = atPoint.get(x);
             if (!row) atPoint.set(x, (row = new Map()));
             let list = row.get(y);
@@ -944,7 +941,11 @@ function assignDashPhase(st: ZoomState, route: string): void {
     const reached = new Uint8Array(n);
     const reach = (i: number, end: number, d: number) => {
         let l = length[i];
-        if (l < 0) length[i] = l = polylineLength(pieces[i].coords);
+        if (l < 0) {
+            l = 0;
+            for (const p of pieces[i]) l += polylineLength(p.coords);
+            length[i] = l;
+        }
         // Distance grows with travel: from the first vertex along the piece, or toward it.
         const d0 = along[i] ? (end ? d - l : d) : (end ? d + l : d);
         at[i * 2] = d0;
@@ -989,8 +990,13 @@ function assignDashPhase(st: ZoomState, route: string): void {
         let least = 0;
         for (const i of queue) least = Math.min(least, at[i * 2], at[i * 2 + 1]);
         for (const i of queue) {
-            const d0 = at[i * 2] - least;
-            pieces[i].startDistance = along[i] ? d0 : -d0;
+            // Distance at each piece's first vertex, from the unit's own along its coordinates.
+            let d0 = at[i * 2] - least;
+            for (const p of pieces[i]) {
+                p.startDistance = along[i] ? d0 : -d0;
+                const l = pieces[i].length > 1 ? polylineLength(p.coords) : 0;
+                d0 = along[i] ? d0 + l : d0 - l;
+            }
         }
     }
 }
@@ -1051,10 +1057,7 @@ function buildGroup(st: ZoomState, grp: ConnGroup): void {
             anchors[i] = node.x * st.scale;
             anchors[i + 1] = node.y * st.scale;
         }
-        st.connPaths.set(m.key, {
-            route: m.route, look: lookOf(st, g.edges[grp.edgeU], m.route), coords: conn, anchors,
-            kind: 'connector', travel: m.travel, startDistance: 0, edge: grp.edgeU, node: m.pu.node, between: [grp.edgeU, grp.edgeV],
-        });
+        st.connPaths.set(m.key, splitAtNodes(st, m.route, conn, anchors, memberSteps(m), m.pu.node, [grp.edgeU, grp.edgeV], false));
     }
 }
 
@@ -1148,7 +1151,6 @@ function buildTailConnector(st: ZoomState, m: ConnMember, clique: {member: ConnM
  * keeps the loop: the offset's own loops were cut when it was built.
  */
 function buildViaConnector(st: ZoomState, m: ConnMember, from: Polyline, to: Polyline): boolean {
-    const g = st.graph;
     const centerline: Polyline = [];
     // Kept as it grows, in the order polylineLength would sum it: re-measuring the whole line at
     // every merged edge made a long crossing quadratic.
@@ -1214,11 +1216,171 @@ function buildViaConnector(st: ZoomState, m: ConnMember, from: Polyline, to: Pol
     slide.points[slide.points.length - 1] = to[1];
     const {points: coords, anchors} = removeLoopsAnchored(slide.points, slide.anchors, SNAP_HOOK_LANES * st.spacing);
     if (coords.length < 4) return false;
-    st.connPaths.set(m.key, {
-        route: m.route, look: lookOf(st, g.edges[m.pu.edge], m.route), coords, anchors,
-        kind: 'connector', travel: m.travel, startDistance: 0, edge: m.pu.edge, node: m.pu.node, between: [m.pu.edge, m.pv.edge],
-    });
+    st.connPaths.set(m.key, splitAtNodes(st, m.route, coords, anchors, memberSteps(m), m.pu.node, [m.pu.edge, m.pv.edge], true));
     return true;
+}
+
+/** One edge a connector lies along, and whether the connector's coordinates run a to b on it. */
+interface ConnStep {
+    edge: number;
+    forward: boolean;
+}
+
+/** The edges a member's connector lies along, in the order of its coordinates. */
+function memberSteps(m: ConnMember): ConnStep[] {
+    const t = m.plan?.tail;
+    if (t) {
+        // A tail's Bezier joins its port's lane to the lane on the nearest merged edge.
+        const p = m.pu;
+        const step = t.edges[t.side === 'end' ? 0 : t.edges.length - 1];
+        return t.side === 'end' ? [{edge: p.edge, forward: p.end === 'b'}, step] : [step, {edge: p.edge, forward: p.end === 'a'}];
+    }
+    return [{edge: m.pu.edge, forward: m.pu.end === 'b'}, ...m.via, {edge: m.pv.edge, forward: m.pv.end === 'a'}];
+}
+
+/**
+ * A connector cut at every node it crosses, one piece per edge, so each piece carries the edge,
+ * look and hit of its own side: a whole connector owned by one edge put that edge's look and
+ * highlight a front's length past the node. Where each cut falls is `nodeCut`'s. A piece with no
+ * length joins its neighbor. Not from the cited papers; worked out for this project.
+ */
+function splitAtNodes(st: ZoomState, route: string, coords: Polyline, anchors: Polyline, steps: ConnStep[], node: number, between: [number, number], slide: boolean): LanePath[] {
+    const g = st.graph;
+    const cut: {c: Polyline; a: Polyline; step: ConnStep; length: number}[] = [];
+    let c = coords, a = anchors;
+    for (let k = 0; k + 1 < steps.length; k++) {
+        const [i, t] = nodeCut(st, c, a, steps[k], steps[k + 1], slide);
+        // Both pieces hold the same cut point, so the dash phase reads across it. A cut on a
+        // vertex is that vertex, not a copy beside it, which would leave a segment of no length.
+        let head: Polyline, headA: Polyline;
+        if (t <= 0 || t >= 1) {
+            const at = t <= 0 ? i : i + 2;
+            head = c.slice(0, at + 2);
+            headA = a.slice(0, at + 2);
+            c = c.slice(at);
+            a = a.slice(at);
+        } else {
+            const x = c[i] + (c[i + 2] - c[i]) * t, y = c[i + 1] + (c[i + 3] - c[i + 1]) * t;
+            const ax = a[i] + (a[i + 2] - a[i]) * t, ay = a[i + 1] + (a[i + 3] - a[i + 1]) * t;
+            head = c.slice(0, i + 2).concat(x, y);
+            headA = a.slice(0, i + 2).concat(ax, ay);
+            c = [x, y, ...c.slice(i + 2)];
+            a = [ax, ay, ...a.slice(i + 2)];
+        }
+        cut.push({c: head, a: headA, step: steps[k], length: polylineLength(head)});
+    }
+    cut.push({c, a, step: steps[steps.length - 1], length: polylineLength(c)});
+    // A piece with no length joins its neighbor, so the pieces still cover the whole connector
+    // end to end, and the walk of the dash phase meets the lanes at their exact ends. A connector
+    // shorter than the threshold keeps one piece: its round caps fill the joint.
+    const kept: typeof cut = [];
+    let pending: typeof cut = [];
+    for (const p of cut) {
+        if (p.length < MIN_PIECE_PX) {
+            pending.push(p);
+            continue;
+        }
+        for (const q of pending.reverse()) {
+            p.c = q.c.concat(p.c.slice(2));
+            p.a = q.a.concat(p.a.slice(2));
+        }
+        pending = [];
+        kept.push(p);
+    }
+    if (!kept.length) {
+        const longest = cut.reduce((x, y) => (y.length > x.length ? y : x));
+        kept.push({...longest, c: coords, a: anchors});
+    } else {
+        const last = kept[kept.length - 1];
+        for (const q of pending) {
+            last.c = last.c.concat(q.c.slice(2));
+            last.a = last.a.concat(q.a.slice(2));
+        }
+    }
+    return kept.map(({c, a, step}) => {
+        const e = g.edges[step.edge];
+        return {
+            route, look: lookOf(st, e, route), coords: c, anchors: a, kind: 'connector',
+            travel: (travelSign(e.direction.get(route)) * (step.forward ? 1 : -1)) as 1 | -1 | 0,
+            startDistance: 0, edge: step.edge, node, between,
+        };
+    });
+}
+
+/**
+ * Where a connector crosses the node between two of its edges, as the segment's first index into
+ * `c` and the fraction along it. The cut line is square to the mean of the arriving and leaving
+ * directions. A slide is cut where its ground points cross that line at the node. A curve between
+ * two cut ends is cut on the line through its own corner, where its two legs would meet: through
+ * the node where the lane keeps its offset, and moved by `D * cot(turn / 2)` for an offset that
+ * changes by `D`, at most `D` from the node, since a gentle turn puts that corner far off. A
+ * group's lanes share `D`, so they share the line. Of the crossings, either way across, the
+ * nearest the node is taken; with none, the line through the node, then the nearest point.
+ */
+/** How far a point lies to the side of a line, signed as `nodeCut` signs it, at the line's nearest segment. */
+function signedOffset(line: Polyline, x: number, y: number): number {
+    let best = Infinity, off = 0;
+    for (let i = 0; i + 3 < line.length; i += 2) {
+        const x1 = line[i], y1 = line[i + 1], dx = line[i + 2] - x1, dy = line[i + 3] - y1;
+        const l2 = dx * dx + dy * dy;
+        if (!l2) continue;
+        const t = Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / l2));
+        const d = Math.hypot(x - x1 - t * dx, y - y1 - t * dy);
+        if (d < best) {
+            best = d;
+            off = (dx * (y - y1) - dy * (x - x1)) / Math.sqrt(l2);
+        }
+    }
+    return off;
+}
+
+function nodeCut(st: ZoomState, c: Polyline, a: Polyline, from: ConnStep, to: ConnStep, slide: boolean): [number, number] {
+    const e = st.graph.edges[from.edge];
+    const n = st.graph.nodes[from.forward ? e.b : e.a];
+    const nx = n.x * st.scale, ny = n.y * st.scale;
+    const din = endDirectionOver(orientedPx(st, from.edge, from.forward), st.spacing);
+    const dout = startDirectionOver(orientedPx(st, to.edge, to.forward), st.spacing);
+    const ux = din[0] + dout[0], uy = din[1] + dout[1];
+    const ul = Math.hypot(ux, uy);
+    const p = slide ? a : c;
+    const crossing = (shift: number): [number, number] | null => {
+        let best = Infinity, bi = 0, bt = 0;
+        for (let i = 0; i + 3 < p.length; i += 2) {
+            const f0 = (p[i] - nx) * ux + (p[i + 1] - ny) * uy - shift;
+            const f1 = (p[i + 2] - nx) * ux + (p[i + 3] - ny) * uy - shift;
+            if ((f0 < 0) === (f1 < 0)) continue;
+            const t = f0 / (f0 - f1);
+            const d = Math.hypot(c[i] + (c[i + 2] - c[i]) * t - nx, c[i + 1] + (c[i + 3] - c[i + 1]) * t - ny);
+            if (d < best) [best, bi, bt] = [d, i, t];
+        }
+        return best < Infinity ? [bi, bt] : null;
+    };
+    if (ul > 1e-6) {
+        let shift = 0;
+        if (!slide) {
+            // Each end's offset from its own edge's line where it was cut, not from a straight
+            // line through the node: a path that curves inside the node front would read as an
+            // offset of its own, and move the cut by lanes for a lane that keeps its offset.
+            const m = c.length;
+            const lu = signedOffset(orientedPx(st, from.edge, from.forward), c[0], c[1]);
+            const lv = signedOffset(orientedPx(st, to.edge, to.forward), c[m - 2], c[m - 1]);
+            const sin = din[0] * dout[1] - din[1] * dout[0];
+            const cos = din[0] * dout[0] + din[1] * dout[1];
+            const d = lu - lv;
+            if (Math.abs(sin) > 1e-9) shift = Math.max(-Math.abs(d) * ul, Math.min(Math.abs(d) * ul, (d * (1 + cos)) / sin));
+        }
+        const hit = crossing(shift) ?? (shift ? crossing(0) : null);
+        if (hit) return hit;
+    }
+    let best = Infinity, bi = 0, bt = 0;
+    for (let i = 0; i + 3 < c.length; i += 2) {
+        const dx = c[i + 2] - c[i], dy = c[i + 3] - c[i + 1];
+        const len = dx * dx + dy * dy;
+        const t = len ? Math.max(0, Math.min(1, ((nx - c[i]) * dx + (ny - c[i + 1]) * dy) / len)) : 0;
+        const d = Math.hypot(c[i] + dx * t - nx, c[i + 1] + dy * t - ny);
+        if (d < best) [best, bi, bt] = [d, i, t];
+    }
+    return [bi, bt];
 }
 
 /** A port of a junction: one end of an edge that is drawn (not merged into the junction). */
