@@ -69,6 +69,11 @@ export interface GraphEdge {
     bounds?: {minX: number; minY: number; maxX: number; maxY: number};
     /** @internal Filled lazily by the layout; see `simplifyRank`. */
     simplifyRank?: Float64Array;
+    /**
+     * The path is one-way, from `LineGraphOptions.onewayProperty`: a route's `direction` here
+     * is the way it must travel, not only the way its line was drawn.
+     */
+    oneway?: boolean;
     /** Values of the `uniformProperties` along this edge, when any were requested. */
     properties?: Record<string, unknown>;
 }
@@ -110,7 +115,18 @@ export interface LineGraphOptions {
      * `GraphEdge.properties`. Where routes disagree, the first feature wins. Off by default.
      */
     uniformProperties?: string[];
+    /**
+     * Feature property saying the path is one-way, in the direction the route travels it.
+     * `yes`, `true`, `1`, and `-1` (as strings, booleans, or numbers) count as one-way; any
+     * other value, `reversible` and `alternating` among them, does not. Where a route meets a
+     * node on one-way paths it enters and leaves by different paths, so a lane that leaves the
+     * node joins one that arrives rather than another that leaves. An edge ends where the
+     * value changes. Off by default.
+     */
+    onewayProperty?: string;
 }
+
+const ONEWAY_VALUES = new Set<unknown>(['yes', 'true', '1', '-1', true, 1, -1]);
 
 type Feature = GJFeature<LineString | MultiLineString>;
 
@@ -141,7 +157,11 @@ export function buildLineGraph(features: GJFeature[], opts: LineGraphOptions = {
     const colorProp = opts.colorProperty ?? 'color';
     const nameProp = opts.nameProperty ?? 'name';
     const snap = opts.snapDegrees ?? 1e-7;
-    const uniform = opts.uniformProperties ?? [];
+    const onewayProp = opts.onewayProperty;
+    // The one-way value must not change along an edge, so it rides the uniform properties.
+    const uniform = onewayProp && !(opts.uniformProperties ?? []).includes(onewayProp)
+        ? [...(opts.uniformProperties ?? []), onewayProp]
+        : opts.uniformProperties ?? [];
     const routes = new Map<string, RouteMeta>();
 
     const vertexPos = new Map<string, [number, number]>();
@@ -276,7 +296,15 @@ export function buildLineGraph(features: GJFeature[], opts: LineGraphOptions = {
             direction.set(r, d === 0 ? 0 : walkForward ? d : -d);
         }
         const edge: GraphEdge = {id, a, b, coords, routes: [...first.routes.keys()].sort(), direction, order: []};
-        if (first.props) edge.properties = first.props;
+        if (first.props) {
+            if (onewayProp && ONEWAY_VALUES.has(first.props[onewayProp])) edge.oneway = true;
+            if (onewayProp && !opts.uniformProperties?.includes(onewayProp)) {
+                const {[onewayProp]: _, ...rest} = first.props;
+                if (Object.keys(rest).length) edge.properties = rest;
+            } else {
+                edge.properties = first.props;
+            }
+        }
         edges.push(edge);
         nodes[a].ports.push({edge: id, end: 'a'});
         nodes[b].ports.push({edge: id, end: 'b'});
@@ -299,7 +327,10 @@ export function buildLineGraph(features: GJFeature[], opts: LineGraphOptions = {
 /**
  * Decompose routes into chains and fill `transitions`. A chain continues
  * along the straightest unused edge, so a route that revisits a junction
- * still reads as one ride through it.
+ * still reads as one ride through it. On one-way edges a route enters a node by
+ * one path and leaves by another, so where the node offers a leg that agrees
+ * with the arriving one, legs that flow the same way as it are not joined to
+ * it; this is not from the cited papers and was worked out for this project.
  */
 export function deriveChains(nodes: GraphNode[], edges: GraphEdge[], routes: Map<string, RouteMeta>): Map<string, RouteChain[]> {
     for (const n of nodes) n.transitions = [];
@@ -319,6 +350,16 @@ export function deriveChains(nodes: GraphNode[], edges: GraphEdge[], routes: Map
         const l = Math.hypot(dx, dy) || 1;
         return [dx / l, dy / l];
     };
+    // 1 when the route flows into the node along this edge end, -1 out of it, 0 when unknown.
+    const flowAt = (rid: string, edge: number, end: 'a' | 'b'): number => {
+        const e = edges[edge];
+        if (!e.oneway) return 0;
+        const d = e.direction.get(rid) ?? 0;
+        if (!d) return 0;
+        return (end === 'b') === (d > 0) ? 1 : -1;
+    };
+    // Both legs flow in, or both out: a route cannot ride from one to the other.
+    const clash = (a: number, b: number) => a !== 0 && a === b;
 
     for (const rid of routes.keys()) {
         const routeEdges = edges.filter((e) => e.routes.includes(rid));
@@ -371,8 +412,14 @@ export function deriveChains(nodes: GraphNode[], edges: GraphEdge[], routes: Map
                 node = far;
                 let best: GraphEdge | null = null;
                 let bestDot = -Infinity;
+                // Two one-way paths that meet head on, with no other way out, still join as before.
+                const arrFlow = flowAt(rid, nextEdge.id, farEnd);
+                const arrEdge = nextEdge.id;
+                const hasAgreeing = arrFlow !== 0 && nodes[node].ports.some((p) =>
+                    p.edge !== arrEdge && edges[p.edge].routes.includes(rid) && flowAt(rid, p.edge, p.end) === -arrFlow);
                 for (const p of nodes[node].ports) {
                     if (!unused.has(p.edge)) continue;
+                    if (hasAgreeing && clash(arrFlow, flowAt(rid, p.edge, p.end))) continue;
                     const o = outDir(p.edge, p.end);
                     const dot = o[0] * arriving[0] + o[1] * arriving[1];
                     if (dot > bestDot + 1e-9 || (Math.abs(dot - bestDot) <= 1e-9 && best && p.edge < best.id)) {
@@ -414,7 +461,9 @@ export function deriveChains(nodes: GraphNode[], edges: GraphEdge[], routes: Map
             n.ports.forEach((p, i) => {
                 if (i === ce.port || !edges[p.edge].routes.includes(rid)) return;
                 const o = outDir(p.edge, p.end);
-                const dot = o[0] * arriveDir[0] + o[1] * arriveDir[1];
+                let dot = o[0] * arriveDir[0] + o[1] * arriveDir[1];
+                // A leg that agrees in flow beats any that clashes; straightness breaks ties.
+                if (clash(flowAt(rid, own.edge, own.end), flowAt(rid, p.edge, p.end))) dot -= 4;
                 if (dot > bestDot) {
                     bestDot = dot;
                     best = i;

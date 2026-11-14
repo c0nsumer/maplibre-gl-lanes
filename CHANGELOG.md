@@ -3,6 +3,20 @@
 All notable changes to maplibre-gl-lanes are recorded here. The format
 follows Keep a Changelog, and the project uses semantic versioning.
 
+## Unreleased
+
+### Added
+
+- `buildLineGraph` takes a `onewayProperty` option naming the feature
+  property that marks a path as one-way. Where a route meets a node on
+  one-way paths, a leg that leaves the node now joins one that arrives,
+  even where a leg leaving the other way is straighter. Without it, a
+  route that rides straight through a T on one lap and turns on another
+  could be drawn turning between the two legs that leave the node. `yes`,
+  `true`, `1`, and `-1` count as one-way; `reversible` does not. Each
+  route's features must run in its direction of travel on those paths.
+  Graphs built without the option are unchanged.
+
 ## 1.5.0 - 2026-11-13
 
 ### Changed

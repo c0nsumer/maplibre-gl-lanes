@@ -45,6 +45,7 @@ shared ways. GPX tracks and GTFS shapes do not.
 | `routes` | none | Route metadata by id (`Record<string, Partial<RouteMeta>>`). It overrides the per-feature properties. |
 | `snapDegrees` | `1e-7` | Coordinate rounding used to match shared vertices, in degrees. |
 | `uniformProperties` | none | Feature properties that must stay the same along an edge, by name. |
+| `onewayProperty` | none | Feature property saying the path is one-way, by name. |
 
 `uniformProperties` is how facts about the path itself, rather than the
 route, reach the lanes. Name a property
@@ -52,6 +53,28 @@ and the edge ends wherever its value changes, exactly as it ends where the
 set of routes changes. The values are kept on `GraphEdge.properties`, and
 they appear on lane features and on hit results under their own names.
 Where routes sharing a path disagree, the first feature wins.
+
+`onewayProperty` tells the graph which paths are one-way, so a junction
+joins a route's legs the way it can travel them. Without it, a route's
+legs at a node are paired by straightness alone. So at a T where a route
+rides straight through on one lap and turns on another, the turning leg
+may be drawn joined to the other leg leaving the node. With it, a leg
+that leaves a one-way node joins one that arrives, and the reverse.
+Straightness still decides among the legs that agree. Two one-way paths
+that meet head on, with no other way out for the route, are still joined.
+
+- One-way: `'yes'`, `'true'`, `'1'`, `'-1'`, and the matching booleans and
+  numbers.
+- Not one-way: every other value, including `'no'`, `'reversible'`,
+  `'alternating'`, an empty string, and a missing property.
+
+The rule reads travel from each route's feature coordinate order, not from
+the tag. So on one-way paths, each route's features must run in the
+direction the route travels. (A `-1` tag only marks the path as one-way.
+Reverse such features before passing them in.) The value splits edges
+where it changes, as a `uniformProperties` entry does. It reaches
+`GraphEdge.properties` only if it is also named in `uniformProperties`.
+The result is kept on the edges, so `filterGraph` keeps it too.
 
 ### `filterGraph(graph, visible): LineGraph`
 
@@ -83,6 +106,7 @@ The graph is mutated in place by design: `orderLanes` writes each edge's
 | `order` | `string[]` | The lane order, left to right traveling a to b. `orderLanes` fills it. |
 | `baseline` | `number?` | Sideways shift of the whole bundle, in lanes, positive to the left of a to b. `stabilizeLanes` fills it. A lane that runs alone holds this shift only next to a junction its route continues through, and follows the path elsewhere. |
 | `properties` | `Record<string, unknown>?` | The `uniformProperties` values along this edge. |
+| `oneway` | `boolean?` | `true` where `onewayProperty` marks the path as one-way. |
 
 ### `GraphNode`
 
