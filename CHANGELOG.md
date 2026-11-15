@@ -3,7 +3,7 @@
 All notable changes to maplibre-gl-lanes are recorded here. The format
 follows Keep a Changelog, and the project uses semantic versioning.
 
-## 1.7.0 - unreleased
+## 1.7.0 - 2026-11-15
 
 ### Added
 
