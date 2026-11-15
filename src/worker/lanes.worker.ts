@@ -8,6 +8,7 @@ import {LaneOrderer, type OrderOptions} from '../core/order.js';
 import {stabilizeLanes, type StabilizeOptions} from '../core/baselines.js';
 import {layoutAtZoom, LayoutCache, type LaneLook, type LaneStyle, type LaneSizes} from '../core/layout.js';
 import {tessellate, TessellateCache, type Piece} from '../render/tessellate.js';
+import {alongFromSource, type PhaseSource} from '../render/fade.js';
 import type {GraphEdge, LaneAppearance, LineGraph} from '../core/graph.js';
 import type {Bounds} from '../core/geometry.js';
 
@@ -53,6 +54,10 @@ export interface LayoutRequest {
      * (edge, route). Undefined keeps the session's table; null clears it.
      */
     looks?: (LaneAppearance | null)[] | null;
+    /** Keep this build's dashed lanes, so a later build can fade from it. */
+    keepPhase?: boolean;
+    /** Earlier builds of the session, by request id, whose dash phase to read into this mesh. */
+    fadeFrom?: number[];
 }
 
 export interface LayoutResponse {
@@ -79,6 +84,10 @@ export interface LayoutResponse {
     groupDotPieces: Piece[][];
     layoutMs: number;
     meshMs: number;
+    /** The request's `fadeFrom`, and per entry the phase read, or null: no dashes, or a build no longer kept. */
+    fadeFrom?: number[];
+    along?: (Float32Array | null)[];
+    fadeMs?: number;
     /** The worker restarted or evicted the session: send the graph again. */
     needGraph?: boolean;
     error?: string;
@@ -107,7 +116,15 @@ interface Session {
     looks: (LaneAppearance | null)[] | null;
     /** Stable across requests: the layout cache keys on the callback's identity. */
     laneStyle: LaneStyle;
+    /** Recent builds' dashed lanes by request id, oldest first. */
+    phases: Map<number, PhaseSource>;
 }
+
+/**
+ * Builds kept to fade from. A fade reads the build on screen, or the one an earlier fade still
+ * runs from, which pans at its zoom may have followed with a few more.
+ */
+const MAX_PHASES = 16;
 
 /**
  * One session per graph, so lane layers do not evict each other: each eviction costs the
@@ -134,6 +151,7 @@ function openSession(req: LayoutRequest): Session {
         meshCache: new TessellateCache(),
         lookAt,
         looks: null,
+        phases: new Map(),
         laneStyle: (e: GraphEdge, r: string) => {
             const table = s.looks;
             if (!table) return null;
@@ -181,6 +199,18 @@ export function handleLayoutRequest(req: LayoutRequest): LayoutResponse {
         cache: s.meshCache,
     });
     const t2 = performance.now();
+    let along: (Float32Array | null)[] | undefined;
+    if (!full && req.fadeFrom) {
+        along = req.fadeFrom.map((id) => {
+            const src = s.phases.get(id);
+            return src ? alongFromSource(mesh, src, layout.zoom, s.origin, s.unitsPerMercator) : null;
+        });
+    }
+    if (!full && req.keepPhase) {
+        s.phases.set(req.id, {paths: layout.paths.filter((p) => p.look.dash), zoom: layout.zoom, scale: layout.scale});
+        while (s.phases.size > MAX_PHASES) s.phases.delete(s.phases.keys().next().value!);
+    }
+    const t3 = performance.now();
     return {
         kind: 'layout',
         id: req.id,
@@ -206,6 +236,7 @@ export function handleLayoutRequest(req: LayoutRequest): LayoutResponse {
         groupDotPieces: mesh.groupDotPieces,
         layoutMs: t1 - t0,
         meshMs: t2 - t1,
+        ...(along ? {fadeFrom: req.fadeFrom, along, fadeMs: t3 - t2} : {}),
     };
 }
 
@@ -229,7 +260,9 @@ function emptyLayout(req: LayoutRequest): LayoutResponse {
 }
 
 export function layoutTransferables(res: LayoutResponse): ArrayBuffer[] {
-    return [...pathTransferables(res.paths), res.vertices.buffer as ArrayBuffer, res.colors.buffer as ArrayBuffer, res.indices.buffer as ArrayBuffer];
+    const out = [...pathTransferables(res.paths), res.vertices.buffer as ArrayBuffer, res.colors.buffer as ArrayBuffer, res.indices.buffer as ArrayBuffer];
+    for (const a of res.along ?? []) if (a) out.push(a.buffer as ArrayBuffer);
+    return out;
 }
 
 type WorkerScope = {

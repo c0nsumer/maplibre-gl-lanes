@@ -295,6 +295,9 @@ otherwise pass unnoticed.
 | `cullMargin` | `0.5` | How far the built area extends beyond the visible one, in viewport widths and heights. |
 | `worker` | `true` | Build in a worker. |
 | `onBuild` | none | Called after every finished build. See `setOnBuild`. |
+| `restBuild` | `false` | Build again for the zoom the map comes to rest at, when the mesh was built for another zoom. See `restBuildPending`. |
+| `restDelay` | `60` | With `restBuild`: how long the zoom must hold still before that build, in ms. |
+| `dashFade` | `0` | Dissolve dashed lanes from the last build's pattern into the new one over this many ms, when a build for another zoom lands. `0` snaps. |
 
 Sizes are in screen pixels and are asked for per zoom, so lane spacing and
 width can follow the camera. `spacing` is the center-to-center distance
@@ -322,6 +325,36 @@ Between them the mesh stays pixel-exact for lane spacing and widths; only
 the bend rounding and the node-front positions age. Zooming in is
 tolerated up to twice the value.
 
+Dashes are sized at the zoom the mesh was built for, so a dash pattern
+stretches with the map until the next build. If the map comes to rest
+inside the `zoomEpsilon` margin, nothing rebuilds and the stretch stays.
+That's up to ~1.4x when zooming in. Pieces near junctions stretch
+differently from straight runs, so some dashes come out visibly longer
+than their neighbors. `restBuild` fixes this: once the zoom holds still,
+the layer builds for the zoom it came to rest at. The build starts on
+`moveend`, or `restDelay` ms after the last `zoom` event, whichever comes
+first. A wheel zoom fires its `moveend` some 200 ms after its last frame,
+which is why the timer is there. The layer listens for those two events
+from `onAdd` to `onRemove`.
+
+A new build restarts the dash pattern from that build's geometry. Without
+`dashFade`, the dashes jump to their new places. With `dashFade`, dashed
+lanes dissolve from the pattern on screen into the new one, as MapLibre
+fades a `line-dasharray` between zooms. Solid lanes are untouched, and
+`queryLane` and `laneFeatures` answer from the new build at once. Every
+build that lands at another zoom than the mesh on screen fades. That's
+the rest build, and any build the zoom triggers mid-gesture. A pan at the
+same zoom doesn't fade, and `setGraph` never does. A build that lands
+mid-fade carries the fade on if it's at the same zoom, or if the fade is
+in its first half. Otherwise it fades afresh from the mesh on screen. The
+first build after `dashFade` is turned on from `0` doesn't fade, because
+nothing kept the build on screen to fade from.
+
+In a worker, the worker reads the last build's pattern into the new mesh
+and keeps the dashed lanes of its recent builds to read it from. The
+render thread only uploads the result. With `worker: false`, the read
+runs inside the render call.
+
 Pass `worker: false` to build inside the render call. Two reasons to want
 that: the lanes are then drawn by the time the map fires `idle`, which is
 what a headless screenshot usually waits for, and a build is then as
@@ -338,6 +371,7 @@ deterministic as the render loop, which suits a test.
 | `setCasingColor(css \| null)` | The casing color. `null` removes the casing. |
 | `setHighlight(route \| routes \| null, style?)` | Which routes are lifted. |
 | `setOnBuild(listener \| null)` | The build listener. |
+| `setDashFade(ms)` | The dash fade length. A fade under way keeps its own. |
 
 #### `setHighlight(route, style?)`
 
@@ -396,6 +430,7 @@ highlighting one route in a bundle hides the route either side of it.
 | Method | What it returns |
 |---|---|
 | `getBuildInfo()` | `LaneBuildInfo \| null`: what the last build covers, without its geometry. |
+| `restBuildPending()` | Whether a rest build is still to come. |
 | `getLayout()` | `Layout \| null`: the lane geometry of the last build. |
 | `laneFeatures(options?)` | The lane geometry as GeoJSON. |
 | `laneFeaturesAsync(options?)` | The same, laid out in the worker. |
@@ -406,6 +441,16 @@ highlighting one route in a bundle hides the route either side of it.
 `getLayout` turns a worker's answer into lane paths the first time
 something asks for them, so call it when you need the geometry, not on
 every frame.
+
+`restBuildPending()` is true when `restBuild` is on and the last build is
+for another zoom than the map's. A zoom within 1e-9 of the build's counts
+as the same, as a zoom clamped by `maxBounds` can be. When it's true, a
+build is still to come, and it fires `onBuild` once the zoom holds still.
+Something that refreshes after a gesture can skip its own refresh while
+this is true, and refresh once, on that build. The cost is latency: that
+refresh then waits for the rest build, which lands a few hundred ms after
+the zoom stops on a large map. Refreshing early and again on the rest
+build keeps labels quick.
 
 #### `setOnBuild(listener)`
 
@@ -523,12 +568,17 @@ finger.
 | `zoom` | The zoom the mesh was built for. |
 | `bounds` | The Mercator bounds it was culled to, or `null` when it covers everything. |
 | `stats` | The layout's stats: edges, edges built, edges merged, nodes, vertices, ms. |
-| `timings` | `{layoutMs, meshMs, renderThreadMs}`. |
+| `timings` | `{layoutMs, meshMs, renderThreadMs, fadeMs, fadeReadMs}`. |
 
 `layoutMs` and `meshMs` are the layout and the mesh build, wherever they
 ran. `renderThreadMs` is what the render thread paid: the buffer upload
 alone when the build ran in a worker, and the layout and mesh build as well
 when it ran there.
+
+`fadeMs` is the render thread's part of starting a dash fade, and
+`fadeReadMs` is what reading the last build's dash pattern into the new
+mesh cost, wherever it ran. After a worker build, `fadeMs` is the upload
+alone. Both are 0 for a build that doesn't fade.
 
 ### `LaneStyle`
 

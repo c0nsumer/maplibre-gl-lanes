@@ -3,6 +3,27 @@
 All notable changes to maplibre-gl-lanes are recorded here. The format
 follows Keep a Changelog, and the project uses semantic versioning.
 
+## 1.7.0 - unreleased
+
+### Added
+
+- `LaneLayer` takes a `restBuild` option. Once the zoom holds still (on
+  `moveend`, or `restDelay` ms after the last `zoom` event, 60 by default),
+  the layer builds for the zoom it came to rest at. Without it, a map
+  resting inside the `zoomEpsilon` margin keeps a mesh built for another
+  zoom, and its dashes stay stretched by up to ~1.4x, some more than their
+  neighbors. `restBuildPending()` says whether such a build is still to
+  come, for a consumer that refreshes once per gesture.
+- `LaneLayer` takes a `dashFade` option, in ms, and `setDashFade(ms)`. When
+  a build for another zoom lands, dashed lanes dissolve from the pattern on
+  screen into the new one instead of jumping. Solid lanes are untouched.
+  The default, `0`, snaps as before. The old pattern is read into the new
+  mesh in the worker, so the render thread only uploads it.
+- `LaneBuildInfo.timings` gains `fadeMs` and `fadeReadMs`.
+
+With both options off, nothing changes: the layer adds no map listeners,
+and its worker keeps nothing extra.
+
 ## 1.6.0 - 2026-11-14
 
 ### Added

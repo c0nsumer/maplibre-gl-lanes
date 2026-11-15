@@ -13,6 +13,7 @@ import {nextRequestId, sendToWorker} from '../core/worker-client.js';
 import type {LayoutRequest, LayoutResponse} from '../worker/lanes.worker.js';
 import type {Bounds} from '../core/geometry.js';
 import {tessellate, parseColor, splitRanges, TessellateCache, FLOATS_PER_VERTEX, type Mesh} from './tessellate.js';
+import {alongFromSource} from './fade.js';
 
 // Comments stay out of the shader strings, which ship as written.
 
@@ -27,15 +28,18 @@ in vec2 a_delta;
 in vec2 a_extrude;
 in vec2 a_normal;
 in float a_along;
+in vec2 a_along_old;
 in vec4 a_color;
 uniform float u_units_per_px;
 uniform float u_outset;
 out vec2 v_normal;
 out vec4 v_color;
 out float v_along;
+out vec2 v_along_old;
 out float v_depth;
 void main() {
     v_along = a_along;
+    v_along_old = a_along_old;
     float thickness = projectLineThickness(a_anchor.y);
     vec2 p = a_anchor + (a_delta + a_extrude * u_outset) * (u_units_per_px * thickness);
     gl_Position = projectTile(p);
@@ -51,11 +55,14 @@ void main() {
  *   period's cap may be the nearest.
  * - `u_along_scale`: layout pixels to screen pixels, for the distance along the line.
  * - `u_cover`: which fragments are kept, by coverage (see `COVER_ALL` and the rest).
+ * - `u_dash_old`, `u_along_scale_old`: the last build's dash, read at `a_along_old.x`, for a
+ *   fade; `u_fade` is how far it has gone, 1 when none is under way.
  */
 const FRAGMENT_SHADER_BODY = `
 in vec2 v_normal;
 in vec4 v_color;
 in float v_along;
+in vec2 v_along_old;
 in float v_depth;
 uniform float u_outset;
 uniform float u_blur;
@@ -65,7 +72,34 @@ uniform vec2 u_dash;
 uniform float u_cap;
 uniform float u_along_scale;
 uniform float u_cover;
+uniform vec2 u_dash_old;
+uniform float u_along_scale_old;
+uniform float u_fade;
 out vec4 fragColor;
+// The coverage of one dash pattern, from the edge coverage across the lane.
+float dashed(float base, float along, vec2 dash, float scale, float dist) {
+    if (dash.x > 0.0) {
+        float period = dash.x + dash.y;
+        float t = mod(along, period);
+        if (u_cap < 0.5) {
+            float edge = min(t, dash.x - t) * scale;
+            return base * clamp(edge / u_blur + 0.5, 0.0, 1.0);
+        }
+        float r = u_outset - 0.5 * u_blur;
+        float best = 1e9;
+        for (int k = -1; k <= 1; k++) {
+            float tk = t - float(k) * period;
+            float c = clamp(tk, 0.0, dash.x);
+            best = min(best, length(vec2((tk - c) * scale, dist)) - r);
+        }
+        return base * clamp(-best / u_blur + 0.5, 0.0, 1.0);
+    }
+    float period = dash.y;
+    float t = mod(along, period) - period * 0.5;
+    float r = u_outset - 0.5 * u_blur;
+    float d = length(vec2(t * scale, dist));
+    return clamp((r - d) / u_blur + 0.5, 0.0, 1.0);
+}
 void main() {
 #ifdef GLOBE
     if (v_depth > 1.0) discard;
@@ -73,29 +107,11 @@ void main() {
     float dist = length(v_normal) * u_outset;
     float alpha = clamp((u_outset - dist) / u_blur, 0.0, 1.0);
     if (u_dash.y > 0.0) {
-        if (u_dash.x > 0.0) {
-            float period = u_dash.x + u_dash.y;
-            float t = mod(v_along, period);
-            if (u_cap < 0.5) {
-                float edge = min(t, u_dash.x - t) * u_along_scale;
-                alpha *= clamp(edge / u_blur + 0.5, 0.0, 1.0);
-            } else {
-                float r = u_outset - 0.5 * u_blur;
-                float best = 1e9;
-                for (int k = -1; k <= 1; k++) {
-                    float tk = t - float(k) * period;
-                    float c = clamp(tk, 0.0, u_dash.x);
-                    best = min(best, length(vec2((tk - c) * u_along_scale, dist)) - r);
-                }
-                alpha *= clamp(-best / u_blur + 0.5, 0.0, 1.0);
-            }
-        } else {
-            float period = u_dash.y;
-            float t = mod(v_along, period) - period * 0.5;
-            float r = u_outset - 0.5 * u_blur;
-            float d = length(vec2(t * u_along_scale, dist));
-            alpha = clamp((r - d) / u_blur + 0.5, 0.0, 1.0);
-        }
+        float now = dashed(alpha, v_along, u_dash, u_along_scale, dist);
+        // Mid-fade, the last build's pattern dissolves into this one's, as MapLibre fades a
+        // dash array between zooms. A vertex with no match in the last build has no weight.
+        float w = u_fade < 1.0 ? clamp(v_along_old.y, 0.0, 1.0) * (1.0 - u_fade) : 0.0;
+        alpha = w > 0.0 ? mix(now, dashed(alpha, v_along_old.x, u_dash_old, u_along_scale_old, dist), w) : now;
     }
     if (u_cover > 0.5) {
         if (u_cover < 1.5) {
@@ -225,6 +241,19 @@ export interface LaneLayerOptions {
     worker?: boolean;
     /** Called after every finished build (see `setOnBuild`). */
     onBuild?: (info: LaneBuildInfo) => void;
+    /**
+     * Build again for the zoom the map comes to rest at, when the mesh was built for another,
+     * so dashes are not left stretched by up to the `zoomEpsilon` margin. Default false. See
+     * `restBuildPending`.
+     */
+    restBuild?: boolean;
+    /** With `restBuild`: how long the zoom must hold still before that build, ms. Default 60. */
+    restDelay?: number;
+    /**
+     * Dissolve dashed lanes from the last build's pattern into the new one over this many ms,
+     * when a build for another zoom lands; solid lanes are untouched. Default 0, which snaps.
+     */
+    dashFade?: number;
 }
 
 /** What one finished build covers (see `LaneLayer.getBuildInfo`). */
@@ -236,8 +265,12 @@ export interface LaneBuildInfo {
     /** The Mercator bounds it was culled to, or null when it covers everything. */
     readonly bounds: Bounds | null;
     readonly stats: Layout['stats'];
-    /** What the build cost, ms. `renderThreadMs` is only the upload after a worker build. */
-    readonly timings: {layoutMs: number; meshMs: number; renderThreadMs: number};
+    /**
+     * What the build cost, ms. `renderThreadMs` is only the upload after a worker build.
+     * `fadeMs` is this thread's part of starting a dash fade, and `fadeReadMs` what reading the
+     * last build's phase cost, in the worker after a worker build.
+     */
+    readonly timings: {layoutMs: number; meshMs: number; renderThreadMs: number; fadeMs?: number; fadeReadMs?: number};
 }
 
 export interface LaneFeatureOptions {
@@ -291,6 +324,25 @@ interface ResolvedHighlight {
     bright: Set<number>;
 }
 
+/** The build a dash fade dissolves from. */
+interface FadeFrom {
+    /** Its zoom, pixels per Mercator unit there, and lane width, which sized its dashes. */
+    zoom: number;
+    scale: number;
+    width: number;
+    /** The worker request that built it, which the worker keeps; null for a build on this thread. */
+    request: number | null;
+    /** Its lanes, for a fade read on this thread; null when the worker holds them. */
+    paths: readonly LanePath[] | null;
+}
+
+/** A dash fade: from what, since when and for how long (ms, `performance.now`). */
+interface Fade {
+    from: FadeFrom;
+    start: number;
+    duration: number;
+}
+
 /** Per group of a run, the index ranges drawn dimmed and bright, ribbon and dots. */
 interface RunSplit {
     dimmed: [number, number][];
@@ -322,6 +374,9 @@ export interface LaneMap {
     unproject(point: [number, number] | {x: number; y: number}): {lng: number; lat: number};
     /** Both versions have it; optional so a stub without it still fits. */
     getLayersOrder?(): string[];
+    /** For `restBuild`; optional so a stub without them still fits. */
+    on?(type: 'zoom' | 'moveend', listener: () => void): unknown;
+    off?(type: 'zoom' | 'moveend', listener: () => void): unknown;
 }
 
 export interface LaneHit {
@@ -349,16 +404,28 @@ export class LaneLayer implements CustomLayerInterface {
     private map: LaneMap | null = null;
     private gl: WebGL2RenderingContext | null = null;
     /** Per projection variant; null for one that failed to build, so it is not tried every frame. */
-    private programs = new Map<string, {program: WebGLProgram; vao: WebGLVertexArrayObject; uniforms: Record<string, WebGLUniformLocation | null>} | null>();
+    private programs = new Map<string, {program: WebGLProgram; vao: WebGLVertexArrayObject; uniforms: Record<string, WebGLUniformLocation | null>; alongOld: number} | null>();
     private vbo: WebGLBuffer | null = null;
     private cbo: WebGLBuffer | null = null;
     private ibo: WebGLBuffer | null = null;
+    /** The last build's distance along per vertex, while a dash fade is under way. */
+    private obo: WebGLBuffer | null = null;
     private mesh: Mesh | null = null;
     /** Materialized from `packed` on demand. */
     private layout: Layout | null = null;
     /** A worker's answer, kept as typed arrays until something asks for paths. */
     private packed: LayoutResponse | null = null;
-    private built: {zoom: number; bounds: Bounds | null} | null = null;
+    /** `request` is the worker request that built it, null for a build on this thread. */
+    private built: {zoom: number; bounds: Bounds | null; width: number; request: number | null} | null = null;
+    private restBuild: boolean;
+    private restDelay: number;
+    private restTimer: ReturnType<typeof setTimeout> | null = null;
+    /** The zoom has held still at another zoom than the build's: build for it. */
+    private restPending = false;
+    private onZoomEvent = () => this.zoomMoved();
+    private onMoveEnd = () => this.zoomSettled();
+    private dashFade: number;
+    private fade: Fade | null = null;
     private inFlight: {id: number} | null = null;
     private session = nextSession++;
     private sentGraph = false;
@@ -401,7 +468,10 @@ export class LaneLayer implements CustomLayerInterface {
     private highlightStyle: ResolvedHighlight | null = null;
     /** Each group's bright split, kept until the mesh or the highlight changes. */
     private brightSplit: {mesh: Mesh; style: ResolvedHighlight; groups: (RunSplit | null)[]} | null = null;
-    private timings = {layoutMs: 0, meshMs: 0, renderThreadMs: 0};
+    private timings = {layoutMs: 0, meshMs: 0, renderThreadMs: 0, fadeMs: 0, fadeReadMs: 0};
+    /** What starting the newest mesh's fade cost this thread, and what reading the phase cost, ms. */
+    private fadeMs = 0;
+    private fadeReadMs = 0;
     /** The depth MapLibre gave this layer for the frame being drawn. */
     private depthBase = 1 - DEPTH_GAP;
     /** The layer's index in the style when `depthBase` was read, or -1. */
@@ -423,6 +493,9 @@ export class LaneLayer implements CustomLayerInterface {
         this.cullMargin = opts.cullMargin ?? 0.5;
         this.useWorker = opts.worker ?? true;
         this.onBuild = opts.onBuild ?? null;
+        this.restBuild = opts.restBuild ?? false;
+        this.restDelay = Math.max(0, opts.restDelay ?? 60);
+        this.dashFade = Math.max(0, opts.dashFade ?? 0);
         const casingCss = opts.casingColor === undefined ? '#333333' : opts.casingColor;
         this.casing = casingCss === null ? null : rgba(parseColor(casingCss));
         this.computeOrigin();
@@ -505,6 +578,35 @@ export class LaneLayer implements CustomLayerInterface {
     /** The highlighted routes, in the order they were given; empty when none. */
     getHighlight(): string[] {
         return [...this.highlight];
+    }
+
+    /** Change the dash fade, ms; 0 snaps. A fade under way keeps its own length. */
+    setDashFade(ms: number): void {
+        this.dashFade = Math.max(0, ms);
+    }
+
+    /**
+     * Whether a rest build is still to come: `restBuild` is on and the last build is for another
+     * zoom than the map's. It lands, with `onBuild`, once the zoom holds still.
+     */
+    restBuildPending(): boolean {
+        return this.restBuild && !!this.map && !!this.built && Math.abs(this.built.zoom - this.map.getZoom()) > 1e-9;
+    }
+
+    private zoomMoved(): void {
+        this.restPending = false;
+        if (this.restTimer !== null) clearTimeout(this.restTimer);
+        // A wheel zoom holds its moveend some 200 ms past its last frame; an ease or a pinch
+        // ends with moveend in the frame of its last zoom, where the timer has not yet run.
+        this.restTimer = setTimeout(() => this.zoomSettled(), this.restDelay);
+    }
+
+    private zoomSettled(): void {
+        if (this.restTimer !== null) clearTimeout(this.restTimer);
+        this.restTimer = null;
+        if (!this.restBuildPending()) return;
+        this.restPending = true;
+        this.map!.triggerRepaint();
     }
 
     /**
@@ -787,10 +889,21 @@ export class LaneLayer implements CustomLayerInterface {
         this.vbo = gl.createBuffer();
         this.cbo = gl.createBuffer();
         this.ibo = gl.createBuffer();
+        this.obo = gl.createBuffer();
         this.dirty = true;
+        if (this.restBuild && map.on) {
+            map.on('zoom', this.onZoomEvent);
+            map.on('moveend', this.onMoveEnd);
+        }
     }
 
-    onRemove(_map: LaneMap, anyGl: AnyGlContext): void {
+    onRemove(map: LaneMap, anyGl: AnyGlContext): void {
+        map.off?.('zoom', this.onZoomEvent);
+        map.off?.('moveend', this.onMoveEnd);
+        if (this.restTimer !== null) clearTimeout(this.restTimer);
+        this.restTimer = null;
+        this.restPending = false;
+        this.fade = null;
         const gl = this.gl;
         if (!gl) {
             this.map = null;
@@ -803,8 +916,8 @@ export class LaneLayer implements CustomLayerInterface {
             gl.deleteVertexArray(p.vao);
         }
         this.programs.clear();
-        for (const b of [this.vbo, this.cbo, this.ibo]) if (b) gl.deleteBuffer(b);
-        this.vbo = this.cbo = this.ibo = null;
+        for (const b of [this.vbo, this.cbo, this.ibo, this.obo]) if (b) gl.deleteBuffer(b);
+        this.vbo = this.cbo = this.ibo = this.obo = null;
         const share = offscreens.get(gl);
         if (share && --share.users <= 0) {
             if (share.target) releaseOffscreen(gl, share.target);
@@ -855,6 +968,7 @@ export class LaneLayer implements CustomLayerInterface {
         }
         const uniforms: Record<string, WebGLUniformLocation | null> = {};
         for (const u of ['u_units_per_px', 'u_outset', 'u_blur', 'u_override', 'u_opacity', 'u_dash', 'u_cap', 'u_along_scale', 'u_cover',
+            'u_dash_old', 'u_along_scale_old', 'u_fade',
             'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) {
             uniforms[u] = gl.getUniformLocation(program, u);
         }
@@ -873,9 +987,15 @@ export class LaneLayer implements CustomLayerInterface {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.cbo);
         gl.enableVertexAttribArray(aCol);
         gl.vertexAttribPointer(aCol, 4, gl.UNSIGNED_BYTE, true, 4, 0);
+        // Enabled only while a fade is under way; the constant [0, 0] reads as no match.
+        const alongOld = gl.getAttribLocation(program, 'a_along_old');
+        if (alongOld >= 0) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.obo);
+            gl.vertexAttribPointer(alongOld, 2, gl.FLOAT, false, 8, 0);
+        }
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ibo);
         gl.bindVertexArray(null);
-        return {program, vao, uniforms};
+        return {program, vao, uniforms, alongOld};
     }
 
     private viewBounds(): Bounds | null {
@@ -915,18 +1035,27 @@ export class LaneLayer implements CustomLayerInterface {
             this.dirty = false;
             return;
         }
+        const from = this.fadeSource(zoom, true);
         const t0 = performance.now();
         const layout = layoutAtZoom(this.graph, zoom, this.sizes, {bounds, smooth: this.smooth, openFolds: this.openFolds, laneStyle: this.laneStyle ?? undefined, cache: this.layoutCache});
         const t1 = performance.now();
         // A view into buffers the cache reuses: upload now, never read again.
-        const mesh = tessellate(layout.paths, {scale: layout.scale, origin: this.origin, unitsPerMercator: this.unitsPerMercator, drawOrder: layout.drawOrder, width: checkedSizes(this.sizes, zoom).width, cache: this.meshCache});
+        const width = checkedSizes(this.sizes, zoom).width;
+        const mesh = tessellate(layout.paths, {scale: layout.scale, origin: this.origin, unitsPerMercator: this.unitsPerMercator, drawOrder: layout.drawOrder, width, cache: this.meshCache});
         const t2 = performance.now();
         this.upload(mesh);
+        this.fadeReadMs = 0;
+        this.startFade(from, zoom, (f) => {
+            const t = performance.now();
+            const along = f.paths ? alongFromSource(mesh, {paths: f.paths, zoom: f.zoom, scale: f.scale}, zoom, this.origin, this.unitsPerMercator) : null;
+            this.fadeReadMs = performance.now() - t;
+            return along;
+        });
         this.layout = layout;
         this.packed = null;
-        this.built = {zoom, bounds};
+        this.built = {zoom, bounds, width, request: null};
         this.dirty = false;
-        this.timings = {layoutMs: t1 - t0, meshMs: t2 - t1, renderThreadMs: performance.now() - t0};
+        this.timings = {layoutMs: t1 - t0, meshMs: t2 - t1, renderThreadMs: performance.now() - t0, fadeMs: this.fadeMs, fadeReadMs: this.fadeReadMs};
         this.finished();
     }
 
@@ -958,6 +1087,11 @@ export class LaneLayer implements CustomLayerInterface {
 
     private sendLayout(zoom: number, bounds: Bounds | null): boolean {
         const req = this.layoutRequest(zoom, bounds, 'built');
+        if (this.dashFade) {
+            req.keepPhase = true;
+            const from = this.fadeCandidates(zoom);
+            if (from.length) req.fadeFrom = from;
+        }
         const sent = sendToWorker<LayoutResponse>(req);
         if (!sent) {
             // Stay on this thread rather than serialize the graph on every rebuild.
@@ -998,12 +1132,18 @@ export class LaneLayer implements CustomLayerInterface {
             return;
         }
         if (!this.gl) return;
+        const from = this.fadeSource(res.zoom, false);
         const t0 = performance.now();
         this.upload(res);
+        this.fadeReadMs = res.fadeMs ?? 0;
+        this.startFade(from, res.zoom, (f) => {
+            const i = f.request === null || !res.fadeFrom ? -1 : res.fadeFrom.indexOf(f.request);
+            return i < 0 ? null : res.along![i];
+        });
         this.packed = res;
         this.layout = null;
-        this.built = {zoom: res.zoom, bounds: res.bounds};
-        this.timings = {layoutMs: res.layoutMs, meshMs: res.meshMs, renderThreadMs: performance.now() - t0};
+        this.built = {zoom: res.zoom, bounds: res.bounds, width: checkedSizes(this.sizes, res.zoom).width, request: res.id};
+        this.timings = {layoutMs: res.layoutMs, meshMs: res.meshMs, renderThreadMs: performance.now() - t0, fadeMs: this.fadeMs, fadeReadMs: this.fadeReadMs};
         this.finished();
         this.map?.triggerRepaint();
     }
@@ -1036,6 +1176,59 @@ export class LaneLayer implements CustomLayerInterface {
         sendToWorker({kind: 'dispose', id: nextRequestId(), session: this.session});
     }
 
+    /**
+     * What a build for `zoom` would fade from, and since when. Mid-fade, a build at the same zoom
+     * (a pan) or one landing in the first half carries the fade on, from where it stands; one in
+     * the second half fades afresh from the mesh on screen. Either way the pattern jumps by at most
+     * half a fade. Null for no fade: none asked, nothing drawn yet, the same zoom, or a new graph,
+     * whose mesh has its own tile. `withPaths` is for a build on this thread, which reads the phase
+     * itself; a worker reads it from the build it kept.
+     */
+    private fadeSource(zoom: number, withPaths: boolean): Fade | null {
+        if (!this.dashFade || !this.built || !this.builtWith || this.builtWith.graph !== this.graph) return null;
+        const f = this.fade;
+        if (f && (this.built.zoom === zoom || (performance.now() - f.start) / f.duration < 0.5)) return f;
+        if (this.built.zoom === zoom) return null;
+        const layout = withPaths ? this.getLayout() : null;
+        if (withPaths && !layout) return null;
+        const from: FadeFrom = {
+            zoom: this.built.zoom, width: this.built.width, request: this.built.request,
+            scale: layout ? layout.scale : 512 * Math.pow(2, this.built.zoom), paths: layout ? layout.paths : null,
+        };
+        // NaN: a fresh fade, which starts once its phase is read, so a slow read does not eat into it.
+        return {from, start: NaN, duration: this.dashFade};
+    }
+
+    /**
+     * The builds a worker build for `zoom` may fade from, as `fadeSource` will choose when it
+     * lands: the source of a fade under way, and the build on screen. Both are read when both may
+     * be chosen, because which one depends on when the build lands.
+     */
+    private fadeCandidates(zoom: number): number[] {
+        const out: number[] = [];
+        if (!this.built || !this.builtWith || this.builtWith.graph !== this.graph) return out;
+        const f = this.fade;
+        if (f && f.from.request !== null) out.push(f.from.request);
+        if (this.built.zoom !== zoom && this.built.request !== null && !out.includes(this.built.request)) out.push(this.built.request);
+        return out;
+    }
+
+    /** `read` gives the fade's source phase per vertex of the new mesh, uploaded already. */
+    private startFade(fade: Fade | null, zoom: number, read: (from: FadeFrom) => Float32Array | null): void {
+        this.fade = null;
+        this.fadeMs = 0;
+        if (!fade || fade.from.zoom === zoom || !this.gl) return;
+        const t0 = performance.now();
+        const along = read(fade.from);
+        if (!along) return;
+        const gl = this.gl;
+        gl.bindVertexArray(null);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.obo);
+        gl.bufferData(gl.ARRAY_BUFFER, along, gl.DYNAMIC_DRAW);
+        this.fade = Number.isNaN(fade.start) ? {...fade, start: performance.now()} : fade;
+        this.fadeMs = performance.now() - t0;
+    }
+
     private upload(mesh: Mesh): void {
         const gl = this.gl!;
         // Between frames MapLibre's last VAO is still bound and would take the index buffer.
@@ -1056,14 +1249,15 @@ export class LaneLayer implements CustomLayerInterface {
         if (!this.map || !this.vbo || !gl) return;
         void anyGl;
         const zoom = this.map.getZoom();
-        if (this.dirty || !this.built || !this.serves(this.built, zoom)) this.rebuild(zoom);
+        if (this.restPending && this.built && this.built.zoom === zoom) this.restPending = false;
+        if (this.dirty || !this.built || !this.serves(this.built, zoom) || this.restPending) this.rebuild(zoom);
         const mesh = this.mesh;
         const frame = this.builtWith;
         if (!mesh || !mesh.indexCount || !frame) return;
 
         const entry = this.programFor(gl, args.shaderData);
         if (!entry) return;
-        const {program, vao, uniforms} = entry;
+        const {program, vao, uniforms, alongOld} = entry;
         // MapLibre 6 passes `getProjectionData`; 5.x has it on the transform.
         // Both read only `canonical` and `wrap`, so a literal tile id serves.
         type ProjectionData = ReturnType<CustomRenderMethodInput['getProjectionData']>;
@@ -1093,6 +1287,19 @@ export class LaneLayer implements CustomLayerInterface {
         gl.uniform1f(uniforms.u_blur, 1 / dpr);
         gl.uniform1f(uniforms.u_opacity, this.opacity);
         gl.uniform1f(uniforms.u_cover, COVER_ALL);
+        // A fade belongs to the mesh it was read for, and ends on its own clock.
+        let fade = this.fade;
+        const fadeT = fade ? (performance.now() - fade.start) / fade.duration : 1;
+        if (fade && !(fadeT < 1)) fade = this.fade = null;
+        if (alongOld >= 0) {
+            if (fade) gl.enableVertexAttribArray(alongOld);
+            else {
+                gl.disableVertexAttribArray(alongOld);
+                gl.vertexAttrib2f(alongOld, 0, 0);
+            }
+        }
+        gl.uniform1f(uniforms.u_fade, fade ? Math.max(0, fadeT) : 1);
+        if (fade) gl.uniform1f(uniforms.u_along_scale_old, Math.pow(2, zoom - fade.from.zoom));
         // Every draw is set out from the depth MapLibre gave this layer, and restored to it. That
         // depth follows from the layer's place in the style alone, and reading it is a round trip
         // to the GPU process, so it is read again only when the place changes.
@@ -1219,6 +1426,7 @@ export class LaneLayer implements CustomLayerInterface {
         gl.depthMask(false);
         gl.depthRange(this.depthBase, this.depthBase);
         gl.bindVertexArray(null);
+        if (fade) this.map.triggerRepaint();
     }
 
     /** Draw at an offset behind this layer's depth, in units of the gap (see `DEPTH_GAP`). */
@@ -1267,6 +1475,7 @@ export class LaneLayer implements CustomLayerInterface {
         const meta = (this.builtWith?.graph ?? this.graph).routes.get(mesh.groupRoutes[run[0]]);
         const periodOf = (look: LaneLook): [number, number] =>
             look.dash ? [look.dash[0] * dashStyle.width, look.dash[1] * dashStyle.width] : [0, 0];
+        const fade = this.fade;
         // A pass is one side of the bright split, or the whole route when nothing is bright.
         type Pass = 'all' | 'dimmed' | 'bright';
         const split = opacities ? opacities.split : null;
@@ -1287,12 +1496,14 @@ export class LaneLayer implements CustomLayerInterface {
         // Dots are the mesh's own quads: cut from the ribbon they are round only where it is straight.
         const drawDashes = (gi: number, look: LaneLook, pass: Pass) => {
             const dots = mesh.groupDots[gi];
-            if (look.dash![0] === 0 && dots && dots[1]) {
+            // Mid-fade, dots are cut from the ribbon, which carries both patterns.
+            if (look.dash![0] === 0 && dots && dots[1] && !fade) {
                 drawAll(dotRanges(gi, pass));
                 return;
             }
             const period = periodOf(look);
             gl.uniform2f(uniforms.u_dash, period[0], period[1]);
+            if (fade) gl.uniform2f(uniforms.u_dash_old, look.dash![0] * fade.from.width, look.dash![1] * fade.from.width);
             draw(gi, pass);
             gl.uniform2f(uniforms.u_dash, 0, 0);
         };

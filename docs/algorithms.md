@@ -314,6 +314,20 @@ the route, with the phase carried through junctions. Dots are geometry
 instead, one quad per dot at the same positions along the route. A dot
 computed per fragment is only a disc where the ribbon is straight.
 
+A dash fade dissolves the pattern of the last build into the new one. It
+uses the new mesh alone. Each vertex of a dashed lane gets a second
+distance along, read from the nearest point on the last build's lane of
+the same route. The search reaches 24 px and is bucketed in a grid. Two
+small tie-breakers settle where passes of a route cross, or meet at a loop
+seam with distances far apart: a penalty for a segment running across the
+vertex's line, and one per pixel between the segment's distance along and
+the one expected from the vertex's own. The fragment shader computes both
+patterns and mixes them over the fade. Dots are drawn as ribbon-cut dots
+for the length of a fade, since a quad can't carry two positions. The
+mixing is the idea behind MapLibre's own dash cross-fade between zooms.
+The phase read is not from the cited papers and was worked out for this
+project.
+
 ## References
 
 1. Hannah Bast, Patrick Brosi, Sabine Storandt. Efficient Generation of
